@@ -4,6 +4,9 @@ import fiona
 import itertools
 import pandas as pd
 
+#DATA SOURCE:
+#https://data.humdata.org/dataset/6ba099c6-350b-4711-9a65-d85a1c5e519c
+
 geoms = fiona.open("jpn_admbnda_adm2_2019.shp")
 G = nx.DiGraph()
 municipalities=dict()
