@@ -2,7 +2,7 @@ import networkx as nx
 from shapely.geometry import shape
 import fiona
 import itertools
-import pandas pd
+import pandas as pd
 
 geoms = fiona.open("jpn_admbnda_adm2_2019.shp")
 G = nx.DiGraph()
