@@ -127,33 +127,71 @@ def quality_integral(t,p,q,m,mmix,w0,w1,w2,w3,w4,w5,eps=1e-2):
         promotion=w3*np.sqrt(mmix[:,3])+eps
         sales=0
         adoption=[] 
-        for ti, tf in zip(xi, xi[1:]):
-            upper=math.ceil(tf)
-            lower=math.floor(tf)
+        for i in xi:
+        # for ti, tf in zip(xi, xi[1:]):
+        #     upper=math.ceil(tf)
+        #     lower=math.floor(tf)
             
-            if upper == len(mmix[:,0]):
-                upper=len(mmix[:,0])-1
-            if lower == len(mmix[:,0]):
-                lower=len(mmix[:,0])-1
+        #     if upper == len(mmix[:,0]):
+        #         upper=len(mmix[:,0])-1
+        #     if lower == len(mmix[:,0]):
+        #         lower=len(mmix[:,0])-1
                 
-            diff=tf-ti
+        #     diff=tf-ti
+        
+            #Exponential and Polynomial Interpolation
+            #Product - See spreadsheet "Product" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+            a=5.195836994
+            b=0.02509865638
+            _prod=a*math.exp(b*i)
             
-            if product[lower]>product[upper]:
-                prod=product[upper]-product[lower]*diff
-            else:
-                prod=product[lower]+product[upper]*diff
-            if price[lower]>price[upper]:
-                pric=price[upper]-price[lower]*diff
-            else:
-                pric=price[lower]+price[upper]*diff
-            if place[lower]>place[upper]:
-                plac=place[upper]-place[lower]*diff
-            else:
-                plac=place[lower]+place[upper]*diff
-            if promotion[lower]>promotion[upper]:
-                promo=promotion[upper]-promotion[lower]*diff
-            else:
-                promo=promotion[lower]+promotion[upper]*diff
+            #Perceived Quality transformation using Weber-Fechner Law which linearizes product quality
+            min_quality_threshold=0.01 #mbps
+            weber_fechner_constant=1
+            prod=weber_fechner_constant*math.log(_prod/min_quality_threshold)
+            
+            #Price - See spreadsheet "Price" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+            p0=0.7238312454
+            p1=-0.009686677157
+            p2=0.0001198351799
+            p3=-0.00001543875789
+            p4=1.30E-07
+            pric=p0+p1*i+p2*(i**2)+p3*(i**3)+p4*(i**4)
+            
+            #Place - See spreadsheet "Distribution" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+            p0=-4.590334248
+            p1=-0.009876083408
+            p2=0.000929745442
+            p3=-0.00004219246514
+            p4=3.48E-07
+            plac=p0+p1*i+p2*(i**2)+p3*(i**3)+p4*(i**4)
+
+            #Promotion - See spreadsheet "Advertising" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+            p0=-2.90E-04
+            p1=5.48E-02
+            p2=-3.13E+00
+            p3=1.37E+02
+            p4=2.06E+04         
+            promo=p0+p1*i+p2*(i**2)+p3*(i**3)+p4*(i**4)
+
+            
+            #Linear Interpolation
+            # if product[lower]>product[upper]:
+            #     prod=product[upper]-product[lower]*diff
+            # else:
+            #     prod=product[lower]+product[upper]*diff
+            # if price[lower]>price[upper]:
+            #     pric=price[upper]-price[lower]*diff
+            # else:
+            #     pric=price[lower]+price[upper]*diff
+            # if place[lower]>place[upper]:
+            #     plac=place[upper]-place[lower]*diff
+            # else:
+            #     plac=place[lower]+place[upper]*diff
+            # if promotion[lower]>promotion[upper]:
+            #     promo=promotion[upper]-promotion[lower]*diff
+            # else:
+            #     promo=promotion[lower]+promotion[upper]*diff
             
             if len(adoption) > 1:
                 prev_sales = adoption[-1]
@@ -161,11 +199,11 @@ def quality_integral(t,p,q,m,mmix,w0,w1,w2,w3,w4,w5,eps=1e-2):
                 prev_sales = 0
 
             sales+=w0+(p*pric+q*prev_sales)*(m*plac-sales)*promo
-            if isinf(sales):
-                print("infinity detected")
+            # if isinf(sales):
+            #     print("infinity detected")
             adoption.append(sales*prod)
-        sales+=w0+(p*pric+q*prev_sales)*(m*plac-sales)*promo
-        adoption.append(sales*prod)
+        # sales+=w0+(p*pric+q*prev_sales)*(m*plac-sales)*promo
+        # adoption.append(sales*prod)
         return np.array(adoption)
                 
     def g(xi):
