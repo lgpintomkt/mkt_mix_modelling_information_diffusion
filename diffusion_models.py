@@ -174,7 +174,6 @@ def gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):
             sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
             adoption.append(max(0,sales))
             continue
-        #product.append(math.exp(-i/w4)*integrate_quadJIT(lambda x: (math.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x))/w4, 1, i)[0]+w5*math.exp(-i/w4))
         product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
         sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
         adoption.append(max(0,sales))
@@ -188,10 +187,8 @@ def gmm_residuals(x,f,t,m,mmix,bc):
     w1=x[3]
     w2=x[4]
     w3=x[5]
-    w4=x[6]
-    w5=x[7]
-    w6=x[8]
-    loss= np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6)-f)**2)+np.sum(np.abs(x))
+    w6=x[6]
+    loss= np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
     print(loss)
     return loss
 
@@ -199,23 +196,23 @@ gmm_diffusion=minimize(
     gmm_residuals, 
     method=adam,
     jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, gmm_residuals, 1e-12,f,t,m,mmix,bc), 
-    x0=[-5.61698105e-04, -4.53542427e-04,  1.00000000e-12,  2.89188732e-04,
-       -3.02462789e-04, -7.43113629e-05,  1.00000016e+03,  1.00000018e+03,
-        5.99121382e-05],
+    x0=[-9.99491090e-04, -8.45522527e-04,  1.00000000e-12,  8.94036601e-04,
+       -6.72656593e-04,  1.85468863e-04, -1.84005389e-04],
     args=(adoption,t,m,mmix,bc),
-    options={'learning_rate':1e-4,'maxiter':10},
+    options={'learning_rate':1e-6,'maxiter':1000},
         bounds=(
         (0,1e-2),
         (0,1e-100),
         (0,1),
         (0,1),
         (0,1),
-        (0,1),
+        (-1,0),
         (1,500),
         (1,500),
         (0,1e-100),
         )
     )
+
 
 p=gmm_diffusion.x[0]
 q=gmm_diffusion.x[1]
@@ -223,13 +220,72 @@ w0=gmm_diffusion.x[2]
 w1=gmm_diffusion.x[3]
 w2=gmm_diffusion.x[4]
 w3=gmm_diffusion.x[5]
-w4=gmm_diffusion.x[6]
-w5=gmm_diffusion.x[7]
-w6=gmm_diffusion.x[8]
-gmm_forecast=gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6)
+w6=gmm_diffusion.x[6]
+gmm_forecast=gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
 
-# #Additive GMM (AGMM)
+#Additive GMM (AGMM)
+def agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,eps=1e-2):  
+    price=w1*mmix[:,1]+eps
+    place=w2*mmix[:,2]+eps
+    promotion=w3*np.sqrt(mmix[:,3])+eps
+    sales=bc
+    adoption=[]
 
+    #Compute product trajectory approximation and sales using the previous product value
+    product=[w6*w5*math.exp(-1/w4)]
+    for i in t:
+        if i == 1:
+            sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
+            adoption.append(max(0,sales))
+            continue
+        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
+        radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
+        diffusion=q*product
+        sales+=radiation+diffusion
+        adoption.append(max(0,sales))
+    return adoption
+
+def agmm_residuals(x,f,t,m,mmix,bc):
+    p=x[0]
+    q=x[1]
+    w0=x[2]
+    w1=x[3]
+    w2=x[4]
+    w3=x[5]
+    w6=x[6]
+    loss= np.sum((agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
+    print(loss)
+    return loss
+
+agmm_diffusion=minimize(
+    agmm_residuals, 
+    method=adam,
+    jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
+    x0=[-9.99491090e-04, -8.45522527e-04,  1.00000000e-12,  8.94036601e-04,
+       -6.72656593e-04,  1.85468863e-04, -1.84005389e-04],
+    args=(adoption,t,m,mmix,bc),
+    options={'learning_rate':1e-6,'maxiter':1000},
+        bounds=(
+        (0,1e-2),
+        (0,1e-100),
+        (0,1),
+        (0,1),
+        (0,1),
+        (-1,0),
+        (1,500),
+        (1,500),
+        (0,1e-100),
+        )
+    )
+
+p=agmm_diffusion.x[0]
+q=agmm_diffusion.x[1]
+w0=agmm_diffusion.x[2]
+w1=agmm_diffusion.x[3]
+w2=agmm_diffusion.x[4]
+w3=agmm_diffusion.x[5]
+w6=agmm_diffusion.x[6]
+agmm_forecast=agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
 
 #Additive GMM over Complex Networks (AGMM-CN)
 
@@ -237,8 +293,8 @@ forecasts=pd.DataFrame({
     'Observed':adoption,
     'Bass Diffusion':bass_forecast,
     'Mesak Diffusion':mesak_forecast,
-    'General Marketing Mix Model':gmm_forecast#,
-    #'Additive General Marketing Mix Model':agmm_forecast
+    'General Marketing Mix Model':gmm_forecast,
+    'Additive General Marketing Mix Model':agmm_forecast
     },index=t)
 
 forecasts.to_excel(data_path+"\\results.xlsx")
