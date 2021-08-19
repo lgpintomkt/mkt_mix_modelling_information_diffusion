@@ -9,18 +9,28 @@ from scipy.optimize import least_squares
 from scipy.optimize import minimize, differential_evolution
 from scipy.optimize import approx_fprime
 from scipy.optimize import fmin
+from scipy.optimize import minimize_scalar
+import operator
 import scipy.integrate as integrate
 import pandas as pd
 import numpy as np
 import inteq
 import math
 import requests
+import networkx as nx
 from timeit import default_timer as timer
 from numba import jit
 import pdb
+import copy
 
 #import sgd-for-scipy from github gist
 exec(requests.get('https://gist.githubusercontent.com/lgpintomkt/9dbf22eb514d275cd89be1172477a1e8/raw/2898c5c73db13936baa7bb673a73f485bb151a66/sgd-for-scipy.py').text)
+
+def susceptibles(d1,ids):
+   d2 = []
+   for d in d1:
+       d2 += G.successors(ids[d])
+   return d2
 
 def link_classes(G):
     degrees=G.out_degree(weight='weight')
@@ -31,22 +41,23 @@ def link_classes(G):
     degs=np.array_split(degs,L)
     link_classes=dict()
     for i,degree in enumerate(degs):
-        link_classes[i]=max(degree)
+        link_classes[i]=min(degree)
     return link_classes
 
-def kempe_greedy_algorithm(G,threshold_model,k=10,steps=10):
+def kempe_greedy_algorithm(G,threshold_model,t,k=10,*args):
     names=nx.get_node_attributes(G,"name")
     graph=copy.deepcopy(G)
     influencers=[]
-    for i in range(k):
+    for i in t:
         activation=dict()
         for node in graph.nodes():
             node_name=names[node]
-            activation[node]=sum(threshold_model(graph,influencers+[node_name],steps)[1].values())-sum(continuous_threshold_model(graph,influencers,steps)[1].values())
+            activation[node]=sum(threshold_model(graph,influencers+[node_name],t,*args)[1].values())-sum(threshold_model(graph,influencers,t,*args)[1].values())
             #print("k="+str(k)+" "+" n="+node+" ("+node_name+"): "+str(activation[node]))
         top_influencer=max(activation.items(), key=operator.itemgetter(1))[0]
         influencers.append(names[top_influencer])
         graph.remove_node(top_influencer)
+    print("Found "+str(len(influencers))+" influencers out of "+str(k))
     return influencers
 
 @jit(nopython=True)
@@ -128,299 +139,329 @@ t_train=np.array(data.index)[:60]
 t_test=np.array(data.index)[60:]
 mmix=np.array(data[['Product','Price','Place','Promotion']])
 
-#Bass Diffusion (BD)
-def bass_model(t,p,q,m,bc):
-    sales=bc
-    adoption=[]
-    for i in t:
-        sales+=p*m+(q-p)*sales-(q/m)*(sales**2)
-        adoption.append(max(0,sales))
-    return adoption
+# #Bass Diffusion (BD)
+# def bass_model(t,p,q,m,bc):
+#     sales=bc
+#     adoption=[]
+#     for i in t:
+#         sales+=p*m+(q-p)*sales-(q/m)*(sales**2)
+#         adoption.append(max(0,sales))
+#     return adoption
 
-def bass_residuals(x,f,t,m,bc):
-    p=x[0]
-    q=x[1]
-    return bass_model(t,p,q,m,bc)-f
+# def bass_residuals(x,f,t,m,bc):
+#     p=x[0]
+#     q=x[1]
+#     return bass_model(t,p,q,m,bc)-f
 
-bass_diffusion=least_squares(
-    bass_residuals, 
-    x0=[0.03,0.38], 
-    args=(adoption,t,m,bc)
-    )
+# bass_diffusion=least_squares(
+#     bass_residuals, 
+#     x0=[0.03,0.38], 
+#     args=(adoption,t,m,bc)
+#     )
 
-p=bass_diffusion.x[0]
-q=bass_diffusion.x[1]
-bass_forecast=bass_model(t,p,q,m,bc)
+# p=bass_diffusion.x[0]
+# q=bass_diffusion.x[1]
+# bass_forecast=bass_model(t,p,q,m,bc)
 
-#Mesak Diffusion (MD)
-def mesak_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,eps=1e-2):
-    price=w1*mmix[:,1]+eps
-    place=w2*mmix[:,2]+eps
-    promotion=w3*np.sqrt(mmix[:,3])+eps
-    sales=bc
-    adoption=[]
-    for i in t:
-        sales+=w0+(p*price[i-1]+q*sales)*(m*place[i-1]-sales)*promotion[i-1]
-        adoption.append(max(0,sales))
-    return adoption
+# #Mesak Diffusion (MD)
+# def mesak_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,eps=1e-2):
+#     price=w1*mmix[:,1]+eps
+#     place=w2*mmix[:,2]+eps
+#     promotion=w3*np.sqrt(mmix[:,3])+eps
+#     sales=bc
+#     adoption=[]
+#     for i in t:
+#         sales+=w0+(p*price[i-1]+q*sales)*(m*place[i-1]-sales)*promotion[i-1]
+#         adoption.append(max(0,sales))
+#     return adoption
 
-def mesak_residuals(x,f,t,m,mmix,bc):
-    p=x[0]
-    q=x[1]
-    w0=x[2]
-    w1=x[3]
-    w2=x[4]
-    w3=x[5]
-    return np.sum((mesak_model(t,p,q,m,mmix,bc,w0,w1,w2,w3)-f)**2)+np.sum(np.abs(x))
+# def mesak_residuals(x,f,t,m,mmix,bc):
+#     p=x[0]
+#     q=x[1]
+#     w0=x[2]
+#     w1=x[3]
+#     w2=x[4]
+#     w3=x[5]
+#     return np.sum((mesak_model(t,p,q,m,mmix,bc,w0,w1,w2,w3)-f)**2)+np.sum(np.abs(x))
 
-mesak_diffusion=minimize(
-    mesak_residuals, 
-    method='nelder-mead', 
-    x0=[1e-12,1e-12,1e8,-1,1,1], 
-    args=(adoption,t,m,mmix,bc)
-    )
+# mesak_diffusion=minimize(
+#     mesak_residuals, 
+#     method='nelder-mead', 
+#     x0=[1e-12,1e-12,1e8,-1,1,1], 
+#     args=(adoption,t,m,mmix,bc)
+#     )
 
-p=mesak_diffusion.x[0]
-q=mesak_diffusion.x[1]
-w0=mesak_diffusion.x[2]
-w1=mesak_diffusion.x[3]
-w2=mesak_diffusion.x[4]
-w3=mesak_diffusion.x[5]
-mesak_forecast=mesak_model(t,p,q,m,mmix,bc,w0,w1,w2,w3)
+# p=mesak_diffusion.x[0]
+# q=mesak_diffusion.x[1]
+# w0=mesak_diffusion.x[2]
+# w1=mesak_diffusion.x[3]
+# w2=mesak_diffusion.x[4]
+# w3=mesak_diffusion.x[5]
+# mesak_forecast=mesak_model(t,p,q,m,mmix,bc,w0,w1,w2,w3)
 
-#General Marketing Mix Modelling (GMM)
-def gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
-    price=w1*mmix[:,1]+eps
-    place=w2*mmix[:,2]+eps
-    promotion=w3*np.sqrt(mmix[:,3])+eps
-    sales=bc
-    adoption=[]
+# #General Marketing Mix Modelling (GMM)
+# def gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
+#     price=w1*mmix[:,1]+eps
+#     place=w2*mmix[:,2]+eps
+#     promotion=w3*np.sqrt(mmix[:,3])+eps
+#     sales=bc
+#     adoption=[]
 
-    #Compute product trajectory approximation and sales using the previous product value
-    product=[w6*w5*math.exp(-1/w4)]
-    for i in t:
-        if i == 1:
-            sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
-            adoption.append(max(0,sales))
-            continue
-        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-        sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
-        adoption.append(max(0,sales))
+#     #Compute product trajectory approximation and sales using the previous product value
+#     product=[w6*w5*math.exp(-1/w4)]
+#     for i in t:
+#         if i == 1:
+#             sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
+#             adoption.append(max(0,sales))
+#             continue
+#         product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
+#         sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
+#         adoption.append(max(0,sales))
         
-    return adoption
+#     return adoption
 
-def gmm_residuals(x,f,t,m,mmix,bc):
-    p=x[0]
-    q=x[1]
-    w0=x[2]
-    w1=x[3]
-    w2=x[4]
-    w3=x[5]
-    w6=x[6]
-    loss= np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
-    #print(loss)
-    return loss
+# def gmm_residuals(x,f,t,m,mmix,bc):
+#     p=x[0]
+#     q=x[1]
+#     w0=x[2]
+#     w1=x[3]
+#     w2=x[4]
+#     w3=x[5]
+#     w6=x[6]
+#     loss= np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
+#     #print(loss)
+#     return loss
 
-gmm_diffusion=differential_evolution(
-    gmm_residuals, 
-    args=(adoption,t,m,mmix,bc),
-    bounds=(
-        (0,1e-2),
-        (0,1e-100),
-        (0,1),
-        (0,1),
-        (0,1),
-        (-1,0),
-        (1,500),
-        (1,500),
-        (0,1e-100),
-        )
-    )
+# gmm_diffusion=differential_evolution(
+#     gmm_residuals, 
+#     args=(adoption,t,m,mmix,bc),
+#     bounds=(
+#         (0,1e-2),
+#         (0,1e-100),
+#         (0,1),
+#         (0,1),
+#         (0,1),
+#         (-1,0),
+#         (1,500),
+#         (1,500),
+#         (0,1e-100),
+#         )
+#     )
 
-x0=gmm_diffusion.x
+# x0=gmm_diffusion.x
 
-gmm_diffusion=minimize(
-    gmm_residuals, 
-    method=adam,
-    #method='nelder-mead',
-    jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, gmm_residuals, 1e-12,f,t,m,mmix,bc), 
-    x0=[-9.99491090e-04, -8.45522527e-04,  1.00000000e-12,  8.94036601e-04,
-        -6.72656593e-04,  1.85468863e-04, -1.84005389e-04],
-    #x0=x0,
-    args=(adoption,t,m,mmix,bc),
-    options={'learning_rate':1e-6,'maxiter':500},
-        bounds=(
-        (0,1e-2),
-        (0,1e-100),
-        (0,1),
-        (0,1),
-        (0,1),
-        (-1,0),
-        (1,500),
-        (1,500),
-        (0,1e-100),
-        )
-    )
+# gmm_diffusion=minimize(
+#     gmm_residuals, 
+#     method=adam,
+#     #method='nelder-mead',
+#     jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, gmm_residuals, 1e-12,f,t,m,mmix,bc), 
+#     x0=[-9.99491090e-04, -8.45522527e-04,  1.00000000e-12,  8.94036601e-04,
+#         -6.72656593e-04,  1.85468863e-04, -1.84005389e-04],
+#     #x0=x0,
+#     args=(adoption,t,m,mmix,bc),
+#     options={'learning_rate':1e-6,'maxiter':500},
+#         bounds=(
+#         (0,1e-2),
+#         (0,1e-100),
+#         (0,1),
+#         (0,1),
+#         (0,1),
+#         (-1,0),
+#         (1,500),
+#         (1,500),
+#         (0,1e-100),
+#         )
+#     )
 
 
-p=gmm_diffusion.x[0]
-q=gmm_diffusion.x[1]
-w0=gmm_diffusion.x[2]
-w1=gmm_diffusion.x[3]
-w2=gmm_diffusion.x[4]
-w3=gmm_diffusion.x[5]
-w6=gmm_diffusion.x[6]
-gmm_forecast=gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
+# p=gmm_diffusion.x[0]
+# q=gmm_diffusion.x[1]
+# w0=gmm_diffusion.x[2]
+# w1=gmm_diffusion.x[3]
+# w2=gmm_diffusion.x[4]
+# w3=gmm_diffusion.x[5]
+# w6=gmm_diffusion.x[6]
+# gmm_forecast=gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
 
-#Additive GMM (AGMM)
-def agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
-    price=w1*mmix[:,1]+eps
-    place=w2*mmix[:,2]+eps
-    promotion=w3*np.sqrt(mmix[:,3])+eps
-    sales=bc
-    adoption=[]
+# #Additive GMM (AGMM)
+# def agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
+#     price=w1*mmix[:,1]+eps
+#     place=w2*mmix[:,2]+eps
+#     promotion=w3*np.sqrt(mmix[:,3])+eps
+#     sales=bc
+#     adoption=[]
 
-    #Compute product trajectory approximation and sales using the previous product value
-    product=[w6*w5*math.exp(-1/w4)]
-    for i in t:
-        if i == 1:
-            radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
-            diffusion=q*product[-1]
-            sales+=w0+radiation+diffusion
-            adoption.append(max(0,sales))
-            continue
-        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-        radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
-        diffusion=q*product[-1]
-        sales+=w0+radiation+diffusion
-        adoption.append(max(0,sales))
-    return adoption
+#     #Compute product trajectory approximation and sales using the previous product value
+#     product=[w6*w5*math.exp(-1/w4)]
+#     for i in t:
+#         if i == 1:
+#             radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
+#             diffusion=q*product[-1]
+#             sales+=w0+radiation+diffusion
+#             adoption.append(max(0,sales))
+#             continue
+#         product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
+#         radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
+#         diffusion=q*product[-1]
+#         sales+=w0+radiation+diffusion
+#         adoption.append(max(0,sales))
+#     return adoption
 
-def agmm_residuals(x,f,t,m,mmix,bc):
-    p=x[0]
-    q=x[1]
-    w0=x[2]
-    w1=x[3]
-    w2=x[4]
-    w3=x[5]
-    w6=x[6]
-    loss= np.sum((agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
-    #print(loss)
-    return loss
+# def agmm_residuals(x,f,t,m,mmix,bc):
+#     p=x[0]
+#     q=x[1]
+#     w0=x[2]
+#     w1=x[3]
+#     w2=x[4]
+#     w3=x[5]
+#     w6=x[6]
+#     loss= np.sum((agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
+#     #print(loss)
+#     return loss
 
-#Use genetic/evolutionary algorithm to find initial values for parameters
-agmm_diffusion=differential_evolution(
-    agmm_residuals, 
-    args=(adoption,t,m,mmix,bc),
-    bounds=(
-        (0,1e-2),
-        (0,1e-100),
-        (0,1),
-        (0,1),
-        (0,1),
-        (-1,0),
-        (1,500),
-        (1,500),
-        (0,1e-100),
-        )
-    )
+# #Use genetic/evolutionary algorithm to find initial values for parameters
+# agmm_diffusion=differential_evolution(
+#     agmm_residuals, 
+#     args=(adoption,t,m,mmix,bc),
+#     bounds=(
+#         (0,1e-2),
+#         (0,1e-100),
+#         (0,1),
+#         (0,1),
+#         (0,1),
+#         (-1,0),
+#         (1,500),
+#         (1,500),
+#         (0,1e-100),
+#         )
+#     )
 
-x0=agmm_diffusion.x
+# x0=agmm_diffusion.x
 
-agmm_diffusion=minimize(
-    agmm_residuals, 
-    method='nelder-mead',
-    jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
-    x0=x0,
-    args=(adoption,t,m,mmix,bc),
-    #options={'learning_rate':1e-12,'maxiter':100}
-    options={'learning_rate':1e-12,'maxiter':500},
-        bounds=(
-        (0,1e-2),
-        (0,1e-100),
-        (0,1),
-        (0,1),
-        (0,1),
-        (-1,0),
-        (1,500),
-        (1,500),
-        (0,1e-100),
-        )
-    )
+# agmm_diffusion=minimize(
+#     agmm_residuals, 
+#     method='nelder-mead',
+#     jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
+#     x0=x0,
+#     args=(adoption,t,m,mmix,bc),
+#     #options={'learning_rate':1e-12,'maxiter':100}
+#     options={'learning_rate':1e-12,'maxiter':500},
+#         bounds=(
+#         (0,1e-2),
+#         (0,1e-100),
+#         (0,1),
+#         (0,1),
+#         (0,1),
+#         (-1,0),
+#         (1,500),
+#         (1,500),
+#         (0,1e-100),
+#         )
+#     )
 
-p=agmm_diffusion.x[0]
-q=agmm_diffusion.x[1]
-w0=agmm_diffusion.x[2]
-w1=agmm_diffusion.x[3]
-w2=agmm_diffusion.x[4]
-w3=agmm_diffusion.x[5]
-w6=agmm_diffusion.x[6]
-agmm_forecast=agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
+# p=agmm_diffusion.x[0]
+# q=agmm_diffusion.x[1]
+# w0=agmm_diffusion.x[2]
+# w1=agmm_diffusion.x[3]
+# w2=agmm_diffusion.x[4]
+# w3=agmm_diffusion.x[5]
+# w6=agmm_diffusion.x[6]
+# agmm_forecast=agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
 
 #Additive GMM over Complex Networks (AGMM-CN)
 #Hyperparameters
 K=8     #Influencer seed set size K
 L=10    #Number of link classes to consider
 
-def radiation_function(t,p,m,mmix,bc,w0,w1,w2,w3,eps=1e-2):
+p=5.06E-03
+q=1.20E-100
+w0=2.73E+00
+w1=1.44E+00
+w2=-1.44E-02
+w3=-2.60E+00
+w6=-5.13E-102
+
+def radiation_function(t,p,q,m,mmix,bc,w0,w1,w2,w3,eps=1e-2):
     price=w1*mmix[:,1]+eps
     place=w2*mmix[:,2]+eps
     promotion=w3*np.sqrt(mmix[:,3])+eps
     
     return w0+p*price[t-1]*(m*place[t-1]-bc)*promotion[t-1]
 
-def diffusion_function(sales,t,p,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,lw,eps=1e-2):  
+def diffusion_function(sales,t,T,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,eps=1e-2):  
     adoption=[]
     
     #Compute product trajectory approximation and sales using the previous product value
     product=[w6*w5*math.exp(-1/w4)]
     for i in t:
+        if i>T:
+            break
         if i == 1:
             diffusion=product[-1]
             adoption.append(diffusion)
             continue
-        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-        diffusion=product[-1]
+        #pdb.set_trace()
+        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales[-1],p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
+        diffusion=q*product[-1]
     return diffusion
 
-def marketing_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,w6,thres,mode='general'):
-    steps=len(t)
+def marketing_threshold_model(G,seeds,t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation,mode='general'):
+    adoption=[]
     actives=copy.deepcopy(seeds)
     name_dict=nx.get_node_attributes(G,"name")
+    ids={v: k for k, v in name_dict.items()}
     link_classes=nx.get_node_attributes(G,"link_class")
     thresholds=dict()
     for node in G.nodes():
-        for index,link in enumerate(thres):
-            if link_classes[node] == link:
+        for index,link in enumerate(list(thres.keys())):
+            if link_classes[node] == str(link):
                 if mode=='general':
                     thresholds[node]=thres[index]
                 elif mode == 'submodular':
                     thresholds[node]=thres[index]-maximum_radiation
-        
+                    
     influence_values=dict()
     for node in G.nodes:
-        influence_values[node]=1e-20
-    for step in range(steps):
-        radiation_level=radiation_function(t,p,q,m,mmix,w0,w1,w2,w3)
-        for node_i in G.nodes:
-            if name_dict[node_i] in actives:
-                continue
-            influence_value=1e-20
+        influence_values[node]=[-thresholds[node]]
+    for step in t:
+        radiation_level=radiation_function(t,p,q,m,mmix,bc,w0,w1,w2,w3)
+        #update actives
+        id_actives=[]
+        for name in actives:
+            id_actives.append(ids[name])
+        for node_i in id_actives:
+            influence_value=influence_values[node_i][-1]
             for node_j in G.predecessors(node_i):
                 if name_dict[node_j] in actives:
-                    influence_value+=G.get_edge_data(node_j,node_i)['weight']*influence_values[node_j]
+                    influence_value+=G.get_edge_data(node_j,node_i)['weight']*influence_values[node_j][-1]
             if mode == 'general':
-                influence_values[node_i]=radiation_level+diffusion_function(influence_value,step)
+                influence_values[node_i].append(radiation_level+diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
             elif mode == 'submodular':
-                influence_values[node_i]=diffusion_function(influence_value,step)
+                influence_values[node_i].append(diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
+        
+        #update susceptibles
+        for node_i in susceptibles(actives,ids):
+            influence_value=influence_values[node_i][-1]
+            for node_j in G.predecessors(node_i):
+                if name_dict[node_j] in actives:
+                    influence_value+=G.get_edge_data(node_j,node_i)['weight']*influence_values[node_j][-1]
+            if mode == 'general':
+                influence_values[node_i].append(radiation_level+diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
+            elif mode == 'submodular':
+                influence_values[node_i].append(diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
         for node_i in G.nodes:
-            if influence_values[node_i]>thresholds[node_i]:
+            #pdb.set_trace()
+            if influence_values[node_i][-1]>0:
                 actives.append(name_dict[node_i])
+        curr_adoption=0
+        for node in influence_values.keys():
+            curr_adoption+=influence_values[node][-1]
+        adoption.append(curr_adoption)
                 
-    return sum(influence_values.values())
+    return adoption
 
-def submodular_marketing_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,w6,thres,maximum_radiation):
-    marketing_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,w6,thres,maximum_radiation,mode='submodular')
+def submodular_marketing_threshold_model(G,seeds,t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation):
+    return marketing_threshold_model(G,seeds,t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation,mode='submodular')
 
 #initialize link class parameterization
 link_class=link_classes(G)
@@ -436,9 +477,9 @@ nx.set_node_attributes(G,assigned_classes,'link_class')
 
 
 #find K top influencers using submodular marketing threshold model
-influencers=kempe_greedy_algorithm(G,marketing_threshold_model,k=K)
-
-
+def rad(x,t,m,mmix,bc): p=x[0];q=x[1];w0=x[2];w1=x[3];w2=x[4];w3=x[5];return np.max(radiation_function(t,p,q,m,mmix,bc,w0,w1,w2,w3))
+maximum_radiation=rad([p,q,w0,w1,w2,w3],t,m,mmix,bc)
+influencers=kempe_greedy_algorithm(G,submodular_marketing_threshold_model,t,K,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6,link_class,maximum_radiation)
 
 def agmm_cn_residuals(x,f,t,m,mmix,bc,G,lc,seeds):
     p=x[0]
