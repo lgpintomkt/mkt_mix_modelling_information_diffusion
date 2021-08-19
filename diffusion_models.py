@@ -8,6 +8,7 @@ Created on Sat Aug 14 21:53:23 2021
 from scipy.optimize import least_squares
 from scipy.optimize import minimize, differential_evolution
 from scipy.optimize import approx_fprime
+from scipy.optimize import fmin
 import scipy.integrate as integrate
 import pandas as pd
 import numpy as np
@@ -32,6 +33,21 @@ def link_classes(G):
     for i,degree in enumerate(degs):
         link_classes[i]=max(degree)
     return link_classes
+
+def kempe_greedy_algorithm(G,threshold_model,k=10,steps=10):
+    names=nx.get_node_attributes(G,"name")
+    graph=copy.deepcopy(G)
+    influencers=[]
+    for i in range(k):
+        activation=dict()
+        for node in graph.nodes():
+            node_name=names[node]
+            activation[node]=sum(threshold_model(graph,influencers+[node_name],steps)[1].values())-sum(continuous_threshold_model(graph,influencers,steps)[1].values())
+            #print("k="+str(k)+" "+" n="+node+" ("+node_name+"): "+str(activation[node]))
+        top_influencer=max(activation.items(), key=operator.itemgetter(1))[0]
+        influencers.append(names[top_influencer])
+        graph.remove_node(top_influencer)
+    return influencers
 
 @jit(nopython=True)
 def u_i(i):
@@ -346,105 +362,100 @@ agmm_forecast=agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
 K=8     #Influencer seed set size K
 L=10    #Number of link classes to consider
 
-def simulate_agmm_cn(G,K,L,t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):
-    #initialize link class parameterization
-    link_class=link_classes(G)
-    degrees=G.out_degree(weight='weight')
-    assigned_classes=dict()
+def radiation_function(t,p,m,mmix,bc,w0,w1,w2,w3,eps=1e-2):
+    price=w1*mmix[:,1]+eps
+    place=w2*mmix[:,2]+eps
+    promotion=w3*np.sqrt(mmix[:,3])+eps
+    
+    return w0+p*price[t-1]*(m*place[t-1]-bc)*promotion[t-1]
+
+def diffusion_function(sales,t,p,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,lw,eps=1e-2):  
+    adoption=[]
+    
+    #Compute product trajectory approximation and sales using the previous product value
+    product=[w6*w5*math.exp(-1/w4)]
+    for i in t:
+        if i == 1:
+            diffusion=product[-1]
+            adoption.append(diffusion)
+            continue
+        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
+        diffusion=product[-1]
+    return diffusion
+
+def marketing_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,w6,thres,mode='general'):
+    steps=len(t)
+    actives=copy.deepcopy(seeds)
+    name_dict=nx.get_node_attributes(G,"name")
+    link_classes=nx.get_node_attributes(G,"link_class")
+    thresholds=dict()
     for node in G.nodes():
-        for link in list(link_class.keys()):
-            if degrees[node]==0:
-                assigned_classes[node]=str(0)
-            if degrees[node]>=link_class[link]:
-                assigned_classes[node]=str(link)
-    nx.set_node_attributes(G,assigned_classes,'Link class')
-    
-    #find top K influencers
-    influencers=[]
-    
-    def influence_function(node_i,node_j,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,lw,eps=1e-2):  
-        price=w1*mmix[:,1]+eps
-        place=w2*mmix[:,2]+eps
-        promotion=w3*np.sqrt(mmix[:,3])+eps
-        sales=bc
-        adoption=[]
+        for index,link in enumerate(thres):
+            if link_classes[node] == link:
+                if mode=='general':
+                    thresholds[node]=thres[index]
+                elif mode == 'submodular':
+                    thresholds[node]=thres[index]-maximum_radiation
         
-        #Compute product trajectory approximation and sales using the previous product value
-        product=[w6*w5*math.exp(-1/w4)]
-        for i in t:
-            if i == 1:
-                radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
-                diffusion=q*product[-1]
-                sales+=w0+radiation+diffusion
-                adoption.append(max(0,sales))
+    influence_values=dict()
+    for node in G.nodes:
+        influence_values[node]=1e-20
+    for step in range(steps):
+        radiation_level=radiation_function(t,p,q,m,mmix,w0,w1,w2,w3)
+        for node_i in G.nodes:
+            if name_dict[node_i] in actives:
                 continue
-            product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-            radiation=p*price[i-1]*(m*place[i-1]-sales)*promotion[i-1]
-            diffusion=q*product[-1]
-            sales+=w0+radiation+diffusion
-            adoption.append(max(0,sales))
-        return adoption
-    
-    def continuous_threshold_model(G,seeds,steps=10):
-        actives=copy.deepcopy(seeds)
-        name_dict=nx.get_node_attributes(G,"name")
-        thresholds=nx.get_node_attributes(G,"threshold")
-        influence_values=dict()
-        for node in G.nodes:
-            influence_values[node]=1e-20
-        for step in range(steps):
-            for node_i in G.nodes:
-                if name_dict[node_i] in actives:
-                    continue
-                influence_function=1e-20
-                for node_j in G.predecessors(node_i):
-                    if name_dict[node_j] in actives:
-                        influence_function+=G.get_edge_data(node_j,node_i)['weight']*influence_functions[node_j]
-                influence_functions[node_i]=influence_function
-            for node_i in G.nodes:
-                if influence_functions[node_i]>thresholds[node_i]:
-                    actives.append(name_dict[node_i])
-        return actives,influence_functions
-    
-    def agmm_cn_residuals(x,f,t,m,mmix,bc,G,lc):
-        p=x[0]
-        q=x[1]
-        w0=x[2]
-        w1=x[3]
-        w2=x[4]
-        w3=x[5]
-        w6=x[6]
-        loss= np.sum((continuous_threshold_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6,x[6:])-f)**2)+np.sum(np.abs(x)**2)
-        print(loss)
-        return loss
-    
-    #Use genetic/evolutionary algorithm to find initial values for parameters
-    agmm_cn_diffusion=differential_evolution(
-        agmm_residuals, 
-        args=(adoption,t,m,mmix,bc,G,list(link_class.keys())),
-        bounds=(
-            (0,1e-2),
-            (0,1e-100),
-            (0,1),
-            (0,1),
-            (0,1),
-            (-1,0),
-            (1,500),
-            (1,500),
-            (0,1e-100),
-            )
-        )
-    
-    x0=agmm_diffusion.x
-    
-    agmm_cn_diffusion=minimize(
-        agmm_cn_residuals, 
-        method='nelder-mead',
-        jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
-        x0=x0,
-        args=(adoption,t,m,mmix,bc),
-        options={'learning_rate':1e-12,'maxiter':500},
-        bounds=(
+            influence_value=1e-20
+            for node_j in G.predecessors(node_i):
+                if name_dict[node_j] in actives:
+                    influence_value+=G.get_edge_data(node_j,node_i)['weight']*influence_values[node_j]
+            if mode == 'general':
+                influence_values[node_i]=radiation_level+diffusion_function(influence_value,step)
+            elif mode == 'submodular':
+                influence_values[node_i]=diffusion_function(influence_value,step)
+        for node_i in G.nodes:
+            if influence_values[node_i]>thresholds[node_i]:
+                actives.append(name_dict[node_i])
+                
+    return sum(influence_values.values())
+
+def submodular_marketing_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,w6,thres,maximum_radiation):
+    marketing_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,w6,thres,maximum_radiation,mode='submodular')
+
+#initialize link class parameterization
+link_class=link_classes(G)
+degrees=G.out_degree(weight='weight')
+assigned_classes=dict()
+for node in G.nodes():
+    for link in list(link_class.keys()):
+        if degrees[node]==0:
+            assigned_classes[node]=str(0)
+        if degrees[node]>=link_class[link]:
+            assigned_classes[node]=str(link)
+nx.set_node_attributes(G,assigned_classes,'link_class')
+
+
+#find K top influencers using submodular marketing threshold model
+influencers=kempe_greedy_algorithm(G,marketing_threshold_model,k=K)
+
+
+
+def agmm_cn_residuals(x,f,t,m,mmix,bc,G,lc,seeds):
+    p=x[0]
+    w0=x[2]
+    w1=x[3]
+    w2=x[4]
+    w3=x[5]
+    w6=x[6]
+    loss= np.sum((general_marketing_mix_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,1e3,1e3,w6,x[6:])-f)**2)+np.sum(np.abs(x)**2)
+    print(loss)
+    return loss
+
+#Use genetic/evolutionary algorithm to find initial values for parameters
+agmm_cn_diffusion=differential_evolution(
+    agmm_residuals, 
+    args=(adoption,t,m,mmix,bc,G,list(link_class.keys())),
+    bounds=(
         (0,1e-2),
         (0,1e-100),
         (0,1),
@@ -455,18 +466,38 @@ def simulate_agmm_cn(G,K,L,t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):
         (1,500),
         (0,1e-100),
         )
-        )
+    )
+
+x0=agmm_diffusion.x
+
+agmm_cn_diffusion=minimize(
+    agmm_cn_residuals, 
+    method='nelder-mead',
+    jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
+    x0=x0,
+    args=(adoption,t,m,mmix,bc),
+    options={'learning_rate':1e-12,'maxiter':500},
+    bounds=(
+    (0,1e-2),
+    (0,1e-100),
+    (0,1),
+    (0,1),
+    (0,1),
+    (-1,0),
+    (1,500),
+    (1,500),
+    (0,1e-100),
+    )
+    )
     
-    return agmm_cn_diffusion
-    
-    p=agmm_cn_diffusion.x[0]
-    q=agmm_cn_diffusion.x[1]
-    w0=agmm_cn_diffusion.x[2]
-    w1=agmm_cn_diffusion.x[3]
-    w2=agmm_cn_diffusion.x[4]
-    w3=agmm_cn_diffusion.x[5]
-    w6=agmm_cn_diffusion.x[6]
-    agmm_forecast=agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
+p=agmm_cn_diffusion.x[0]
+q=agmm_cn_diffusion.x[1]
+w0=agmm_cn_diffusion.x[2]
+w1=agmm_cn_diffusion.x[3]
+w2=agmm_cn_diffusion.x[4]
+w3=agmm_cn_diffusion.x[5]
+w6=agmm_cn_diffusion.x[6]
+agmm_forecast=agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
 
 
 forecasts=pd.DataFrame({
