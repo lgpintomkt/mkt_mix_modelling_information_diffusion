@@ -27,6 +27,18 @@ import random
 #import sgd-for-scipy from github gist
 exec(requests.get('https://gist.githubusercontent.com/lgpintomkt/9dbf22eb514d275cd89be1172477a1e8/raw/2898c5c73db13936baa7bb673a73f485bb151a66/sgd-for-scipy.py').text)
 
+def simplify_graph(subgraph):
+    sbc=subgraph.copy()
+    #remove edges with small weights until the graph becomes a DAG
+    sorted_edges=sorted(sbc.edges(data=True), key=lambda t: t[2].get('weight', 1))
+    for edge in sorted_edges:
+        node_i=edge[0]
+        node_j=edge[1]
+        sbc.remove_edge(node_i,node_j)
+        if nx.is_directed_acyclic_graph(sbc):
+            break
+    return sbc
+
 def diff(li1, li2):
     return list(set(li1) - set(li2))
 
@@ -38,7 +50,7 @@ def susceptibles(d1,ids):
        d3.append(ids[d])
    return diff(list(set(d2)),d3)
 
-def link_classes(G):
+def link_classes(G,L):
     degrees=G.out_degree(weight='weight')
     degs=[]
     for degree in degrees:
@@ -72,14 +84,15 @@ def kempe_greedy_algorithm(G,threshold_model,t,*args,k=10):
     
     #modification to make it faster, consider only top 15
     #candidates=graph.nodes()
-    #candidates=list(set(centrality_heuristic(graph,k=2,method='eigenvector')))
+    #candidates=list(set(centrality_heuristic(graph,k=3,method='eigenvector')))
     candidates=list(set(centrality_heuristic(graph,k=15,method='eigenvector')+centrality_heuristic(graph,k=15,method='outdegree')))
     print("Considering "+str(len(candidates))+" candidates.")
     for i in range(1,k+1):
         activation=dict()    
         candidate=1
-        newgraph=copy.deepcopy(graph)
-        nodes=newgraph.nodes()
+        #newgraph=copy.deepcopy(graph)
+        
+        nodes=G.nodes()
         for node in nodes:
             node_name=names[node]
             if node_name in influencers:
@@ -93,14 +106,14 @@ def kempe_greedy_algorithm(G,threshold_model,t,*args,k=10):
                 #print("Computing baseline...")
                 baseline=threshold_model(graph,[],t,influencers,*args[1:])[1][0]
             print("Influencer candidate "+str(candidate)+": "+node_name)
-            new=threshold_model(graph,[node_name],t,influencers,*args[1:])[1]
+            #pdb.set_trace()
+            new=threshold_model(graph,[node_name],t,influencers,*args[1:])[1][-1]
             activation[node]=new-baseline
             candidate+=1
             #print("k="+str(k)+" "+" n="+node+" ("+node_name+"): "+str(activation[node]))
         top_influencer=max(activation.items(), key=operator.itemgetter(1))[0]
         influencers.append(names[top_influencer])
-        #graph.remove_node(top_influencer)
-        #pdb.set_trace()
+        G.remove_node(top_influencer)
         baseline=max(activation.values())
         print("Found "+str(len(influencers))+" influencers out of "+str(k)+": "+names[top_influencer])
     return influencers
@@ -435,6 +448,8 @@ def radiation_function(t,p,q,m,mmix,bc,w0,w1,w2,w3,eps=1e-2):
 
 def diffusion_function(sales,t,T,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,eps=1e-2):  
     adoption=[]
+    integral=[]
+    f_i_1=math.exp(1/w4)*bc*w5*math.exp(-1/w4)
     
     #Compute product trajectory approximation and sales using the previous product value
     product=[w6*w5*math.exp(-1/w4)]
@@ -451,56 +466,69 @@ def diffusion_function(sales,t,T,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,eps=1e
         #product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales[-1],p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
         #very simple trapezoidal rule
         #step=base=1
-        height=np.divide(np.exp(i/w4)*f(i,product[-1],sales[-1],p,q,m,w0,w1,w2,w3,w4,w5)*u_i(i),w4)
-        area=product[-1]+(height/2)
-        product.append(w6*math.exp(-i/w4)*area+w5*math.exp(-i/w4))
+        try:
+            f_i=np.divide(math.exp(i/w4)*f(i,product[-1],sales[i-1],p,q,m,w0,w1,w2,w3,w4,w5)*u_i(i),w4)
+        except:
+            pdb.set_trace()
+        integral.append((f_i_1+f_i)/2)
+        f_i_1=integral[-1]
+        product.append(w6*math.exp(-i/w4)*integral[-1]+w5*math.exp(-i/w4))
         diffusion=q*product[-1]
     return diffusion
 
-def marketing_threshold_model(graph_net,seeds,t,black_list,k,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation,mode='general',eps=1e-12,max_steps=2,scale=1e-3):
+def marketing_threshold_model(G,seeds,t,black_list,k,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation,mode='general',eps=1e-12,max_steps=2,scale=1e-3):
+    nodes=list(G.nodes)
     if len(seeds)==0:
         return (0,np.ones(max_steps-1)*bc)
     
     adoption=[]
     actives=copy.deepcopy(seeds)
-    try:
-        del gra
-    except:
-        pass
+    # if mode=='general':
+    #     max_steps=len(t)
+    max_steps=len(t)
+    #name_dict=nx.get_node_attributes(G,"name")
+    #ids={v: k for k, v in name_dict.items()}
+    # if len(black_list)>0:
+    #     for i in black_list:    
+    #         try:
+    #             G.remove_node(ids[i])
+    #         except:
+    #             pass
     if mode=='submodular':
-        gra=copy.deepcopy(graph_net)
-    else:
-        gra=graph_net
-    name_dict=nx.get_node_attributes(gra,"name")
-    ids={v: k for k, v in name_dict.items()}
-    if len(black_list)>0:
-        for i in black_list:    
+        name_dict=nx.get_node_attributes(G,"name")
+        ids={v: k for k, v in name_dict.items()}
+        black_list_ids=[]
+        for node in black_list:
             try:
-                gra.remove_node(ids[i])
+                black_list_ids.append(ids[node])
             except:
-                pass
-    name_dict=nx.get_node_attributes(gra,"name")
+                continue
+        G.remove_nodes_from(black_list_ids)
+    name_dict=nx.get_node_attributes(G,"name")
     ids={v: k for k, v in name_dict.items()}
-    G=copy.deepcopy(gra)
+    #G=copy.deepcopy(gra)
+    
     link_classes=nx.get_node_attributes(G,"link_class")
+    influence_values=dict()
+    current_influence=dict()
     thresholds=dict()
     for node in G.nodes():
+        influence_values[node]=[]
+        current_influence[node]=0
         for index,link in enumerate(list(thres.keys())):
             if link_classes[node] == str(link):
                 if mode=='general':
                     thresholds[node]=thres[index]
                 elif mode == 'submodular':
                     thresholds[node]=thres[index]+maximum_radiation
-    
-    influence_values=dict()
-    for node in G.nodes:
-        influence_values[node]=[]
-
+    # if mode=='general':
+    #     pdb.set_trace()
     for step in t:
         if step==max_steps:
             break
-        radiation_level=radiation_function(t,p,q,m,mmix,bc,w0,w1,w2,w3)
-        #update actives
+        radiation_level=radiation_function(t,p,q,m,mmix,bc,w0,w1,w2,w3)[-1]
+        
+        #prepare active nodes subgraph to be acyclic
         id_actives=[]
         for name in actives:
             try:
@@ -508,72 +536,88 @@ def marketing_threshold_model(graph_net,seeds,t,black_list,k,p,q,m,mmix,bc,w0,w1
             except:
                 pdb.set_trace()
         id_actives=list(set(id_actives))
-
-        for node_i in id_actives:
-            
-            #print("Current node: "+str(node_i))
+        
+        try:
+            del active_dag
+        except:
+            pass
+        subgraph=G.subgraph(id_actives)
+        active_dag=simplify_graph(subgraph)
+        # if mode=='general':
+        #     pdb.set_trace()
+        active_nodes=nx.topological_sort(active_dag)
+        
+        #update actives
+        for node_i in active_nodes:
             if step==1:
                 influence_value=eps
             else:
                 influence_value=influence_values[node_i][-1]
-            for node_j in G.predecessors(node_i):
-                if name_dict[node_j] in actives:
-                    #pdb.set_trace()
-                    #print(influence_values[node_j][-1])
+            for node_j in active_dag.predecessors(node_i):
+                if step==1:
+                    influence_value+=G.get_edge_data(node_j,node_i)['weight']*eps
+                else:
                     influence_value+=G.get_edge_data(node_j,node_i)['weight']*influence_values[node_j][-1]
-            if mode == 'general':
-                influence_values[node_i].append(radiation_level+diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
-            elif mode == 'submodular':
-                influence_values[node_i].append(maximum_radiation+diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
-        
+                current_influence[node_i]+=influence_value
+
         #update susceptibles
-        for node_i in susceptibles(actives,ids):
+        susceptible_nodes=susceptibles(actives,ids)
+        for node_i in susceptible_nodes:
             #print("Current node: "+str(node_i))
             if step==1:
-                influence_value=-thresholds[node]
+                influence_value=-thresholds[node_i]
             else:
                 influence_value=influence_values[node_i][-1]
-            try:
-                for node_j in G.predecessors(node_i):
-                    if name_dict[node_j] in actives:
-                        #Relu style activation
+
+            predecessors=G.predecessors(node_i)
+            for node_j in predecessors:
+                if name_dict[node_j] in actives:
+                    if len(influence_values[node_j])==0:
+                        influence_value+=G.get_edge_data(node_j,node_i)['weight']*eps
+                    else:
                         influence_value+=G.get_edge_data(node_j,node_i)['weight']*influence_values[node_j][-1]
-            except:
-                continue
-            if mode == 'general':
-                influence_values[node_i].append(radiation_level+diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
-            elif mode == 'submodular':
-                influence_values[node_i].append(maximum_radiation+diffusion_function(influence_values[node_i],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
+                    current_influence[node_i]+=influence_value
                 
-        #update the non susceptibles and non actives
-        for node_i in G.nodes:
-            if node_i not in susceptibles(actives,ids)+id_actives:
+        #update non susceptibles and non actives
+        for node_i in nodes:
+            if node_i not in susceptible_nodes+id_actives:
                 if step==1:
-                    influence_value=-thresholds[node]
+                    influence_value=-thresholds[node_i]
                 else:
                     influence_value=influence_values[node_i][-1]
-                influence_values[node_i].append(influence_value)
+                current_influence[node_i]=influence_value
             
         #update state
+        curr_adoption=[]
         for node_i in G.nodes:
+            # if mode=='general':
+            #         pdb.set_trace()
+            
+            if mode == 'general':
+                influence_values[node_i].append(radiation_level+diffusion_function(influence_values[node_i]+[current_influence[node_i]],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
+            elif mode == 'submodular':
+                try:
+                    influence_values[node_i].append(maximum_radiation+diffusion_function(influence_values[node_i]+[current_influence[node_i]],t,step,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres))
+                except:
+                    pdb.set_trace()
+            
             if influence_values[node_i][-1]>0:
                 actives.append(name_dict[node_i])
-        curr_adoption=[]
-        for node in influence_values.keys():
-            #Relu style activation
-            curr_adoption.append(max(0,influence_values[node][-1])*scale)
+                #Relu style activation
+                curr_adoption.append(max(0,influence_values[node][-1])*scale)
+            
         #pdb.set_trace()
-        print("First Step Adoption: "+str(bc+sum(curr_adoption)))
-        #print("Step "+str(step)+", Adoption: "+str(bc+sum(curr_adoption)))
+        #print("Adoption: "+str(bc+sum(curr_adoption)))
+        print("Step "+str(step)+", Adoption: "+str(bc+sum(curr_adoption)))
         adoption.append(bc+sum(curr_adoption))
                 
-    return len(actives),adoption[-1]
+    return len(actives),adoption
 
 def submodular_marketing_threshold_model(G,seeds,t,black_list,k,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation):
     return marketing_threshold_model(G,seeds,t,black_list,k,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,thres,maximum_radiation,mode='submodular')
 
 #initialize link class parameterization
-link_class=link_classes(G)
+link_class=link_classes(G,L)
 degrees=G.out_degree(weight='weight')
 link_class_thres=dict()
 for link in list(link_class.keys()):
@@ -593,21 +637,42 @@ def rad(x,t,m,mmix,bc): p=x[0];q=x[1];w0=x[2];w1=x[3];w2=x[4];w3=x[5];return np.
 maximum_radiation=rad([p,q,w0,w1,w2,w3],t,m,mmix,bc)
 influencers=kempe_greedy_algorithm(G,submodular_marketing_threshold_model,t,[],K,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6,link_class_thres,maximum_radiation)
 
-def agmm_cn_residuals(x,f,t,m,mmix,bc,G,lc,seeds):
+def agmm_cn_residuals(x,f,t,m,mmix,bc,G,lc,seeds,mr):
     p=x[0]
     w0=x[2]
     w1=x[3]
     w2=x[4]
     w3=x[5]
     w6=x[6]
-    loss= np.sum((general_marketing_mix_threshold_model(G,seeds,t,p,m,mmix,w0,w1,w2,w3,1e3,1e3,w6,x[6:])-f)**2)+np.sum(np.abs(x)**2)
+    for index,i in enumerate(x[6:]):
+        link_class[index]==i
+                                            
+    loss= np.sum((marketing_threshold_model(G,seeds,t,[],10,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6,link_class,mr)-f)**2)+np.sum(np.abs(x)**2)
     print(loss)
     return loss
 
+#Reset graph
+del G
+G=nx.read_graphml(data_path+"\\Data\\Network\\Network Files\\japan_municipalities_extended.xml")
+link_class=link_classes(G,L)
+degrees=G.out_degree(weight='weight')
+link_class_thres=dict()
+for link in list(link_class.keys()):
+    link_class_thres[link]=random.uniform(0,1e8)/random.uniform(1,1e4)
+assigned_classes=dict()
+for node in G.nodes():
+    for link in list(link_class.keys()):
+        if degrees[node]==0:
+            assigned_classes[node]=str(0)
+        if degrees[node]>=link_class[link]:
+            assigned_classes[node]=str(link)
+nx.set_node_attributes(G,assigned_classes,'link_class')
+
+
 #Use genetic/evolutionary algorithm to find initial values for parameters
 agmm_cn_diffusion=differential_evolution(
-    agmm_residuals, 
-    args=(adoption,t,m,mmix,bc,G,list(link_class.keys())),
+    agmm_cn_residuals, 
+    args=(adoption,t,m,mmix,bc,G,link_class_thres,influencers,maximum_radiation),
     bounds=(
         (0,1e-2),
         (0,1e-100),
@@ -621,26 +686,27 @@ agmm_cn_diffusion=differential_evolution(
         )
     )
 
-x0=agmm_diffusion.x
+#x0=agmm_cn_diffusion.x
+x0=[5.06E-03,1.20E-100,2.73E+00,1.44E+00,-1.44E-02,-2.60E+00,-5.13E-102]
 
 agmm_cn_diffusion=minimize(
     agmm_cn_residuals, 
     method='nelder-mead',
-    jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
+    jac=lambda x,f,t,m,mmix,bc,maximum_radiation: approx_fprime(x, agmm_cn_residuals, 1e-12,f,t,m,mmix,bc,maximum_radiation), 
     x0=x0,
-    args=(adoption,t,m,mmix,bc),
+    args=(adoption,t,m,mmix,bc,G,link_class_thres,influencers,maximum_radiation),
     options={'learning_rate':1e-12,'maxiter':500},
     bounds=(
-    (0,1e-2),
-    (0,1e-100),
-    (0,1),
-    (0,1),
-    (0,1),
-    (-1,0),
-    (1,500),
-    (1,500),
-    (0,1e-100),
-    )
+        (0,1e-2),
+        (0,1e-100),
+        (0,1),
+        (0,1),
+        (0,1),
+        (-1,0),
+        (1,500),
+        (1,500),
+        (0,1e-100),
+        )
     )
     
 p=agmm_cn_diffusion.x[0]
