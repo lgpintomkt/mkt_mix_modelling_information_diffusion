@@ -13,6 +13,7 @@ import operator
 import scipy
 import pandas as pd
 from numba import jit
+from scipy.optimize import minimize, differential_evolution
 
 def f(i:float,u:float,bc:float,p:float,q:float,m:int,w0:float,w1:float,w2:float,w3:float,w4:float,w5:float):
 
@@ -75,7 +76,17 @@ def centrality_heuristic(G,method='outdegree',k=100,output='id'):
         del centralities[str(top_influencer)]
     return influencers
 
-
+def link_classes(G,L):
+    degrees=G.out_degree(weight='weight')
+    degs=[]
+    for degree in degrees:
+        degs.append(degree[1])
+    degs.sort()
+    degs=np.array_split(degs,L)
+    link_classes=dict()
+    for i,degree in enumerate(degs):
+        link_classes[i]=min(degree)
+    return link_classes
 
 data_path="C:\\Users\\MMSETUBAL\\Desktop\\Artigos\\MMM and Information Diffusion over Complex Networks"
 G=nx.read_graphml(data_path+"\\Data\\Network\\Network Files\\japan_municipalities_extended_normalized_v2.xml")
@@ -98,15 +109,11 @@ for node in G.nodes():
         if degrees[node]>=link_class[link]:
             assigned_classes[node]=str(link)
 nx.set_node_attributes(G,assigned_classes,'link_class')
+thresholds=list(link_class_thres.values())
 
 link_classes=nx.get_node_attributes(G,"link_class")
-thresholds=dict()
-for node in G.nodes():
-    for index,link in enumerate(list(link_class_thres.keys())):
-        if link_classes[node] == str(link):
-            thresholds[node]=link_class_thres[index]
 
-thres=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+
 p=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 q=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 w0=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
@@ -129,60 +136,91 @@ initial_values=np.zeros([1889,1889])
 for influencer in influencers:
     initial_values[influencer,:]=bc/len(influencers)
 
-
+A=nx.to_numpy_array(G,weight='normalized weight')  
+network=tf.keras.layers.Dense(
+    1889, use_bias=False,
+    kernel_initializer=tf.compat.v1.keras.initializers.Constant(A),
+    trainable=False,dtype=tf.float32
+)
 
 
 data=pd.read_csv(data_path+"\\Data\\Statistical\\mmm_data.csv",sep=";").set_index("t")
 m=data['Adoption'].iloc[-1]
 adoption=np.array(data['Adoption'])
 t=np.array(data.index)
-t_train=np.array(data.index)[:60]
+t_train=np.array(data.index)[:55]
+t_val=np.array(data.index)[55:60]
 t_test=np.array(data.index)[60:]
 mmix=np.array(data[['Product','Price','Place','Promotion']])
 
-def marketing_mix_diffusion_cn(t,G,bc,m,mmix):
+def marketing_mix_cn_model(t,G,bc,m,mmix,thres,influencers):
 
-    A=nx.to_numpy_array(G,weight='normalized weights')  
-    network=tf.keras.layers.Dense(
-        1889, use_bias=False,
-        kernel_initializer=tf.compat.v1.keras.initializers.Constant(A),
-        trainable=False,dtype=tf.float32
-    )
-    values_0=tf.nn.relu(network(initial_values)+thres)
+    global network    
+    global link_classes
+    thresholds=dict()
+    for node in G.nodes():
+        for index,link in enumerate(thres):
+            if link_classes[node] == str(index):
+                thresholds[node]=thres[index]
+    thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=False,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+    
+    values=tf.clip_by_value(tf.nn.relu(network(influencers)+thres_var),0,1e2)
     u_0=w5*np.exp(-1/w4)
     f_i=np.zeros([1889,1889,73])
-    f_i[:,:,0]=tf.multiply(np.exp(1/w4),values_0)+w5*np.exp(-1/w4)
+    f_i[:,:,0]=tf.multiply(np.exp(1/w4),values)+w5*np.exp(-1/w4)
     u=np.zeros([1889,73])
     u[:,0]=u_0
-    values=values_0
     adopt=np.zeros([1889,72])
-    pred=np.zeros(72)
+    pred=np.zeros(len(t))
+    activation=np.zeros(73)
+    activation[0]=tf.reduce_sum(tf.cast(tf.math.greater(values[:,i-1], 0.), tf.float32))
     for i in t:
         radiation=w0+p*(-w1)*((mmix[i,1]+1e-12)**(-lamb))*(m*w2*mmix[i,2]-bc)*w3*np.sqrt(mmix[i,3])
-        f_i[:,:,i]=tf.multiply(np.exp(i/w4),values_0)+w5*np.exp(-i/w4)
+        f_i[:,:,i]=tf.multiply(np.exp(i/w4),values)+w5*np.exp(-i/w4)
         if i==1:
             u[:,i]=w5*np.exp(-t[0]/w4)
         else:
-            u[:,i]=w6*np.exp(-t[i-1]/w4)*tf.cast(tfp.math.trapz(np.exp(-t[0:i-1]/w4)*np.divide(np.exp(t[0:i-1]/w4)*tf.reduce_sum(f_i[:,:,0:i-1])*mmix[0:i-1,0],w4)),dtype=tf.float32)+w5*np.exp(-t[i-1]/w4)
+            u[:,i]=w6*np.exp(-t[i-1]/w4)*tf.cast(tfp.math.trapz(np.exp(-t[0:i-1]/w4)*np.divide(np.exp(t[0:i-1]/w4)*tf.reduce_sum(tf.nn.relu(f_i[:,:,0:i-1]))*mmix[0:i-1,0],w4)),dtype=tf.float32)+w5*np.exp(-t[i-1]/w4)
         diffusion=q*u[:,i]
         adopt[:,i-1]=radiation+diffusion
-        if i>1:
-            pred[i-1]=max(tf.reduce_sum(adopt[:,i-1]),pred[i-2])
-        else:
-            pred[i-1]=tf.reduce_sum(adopt[:,i-1])
-        values=tf.nn.relu(network(values))
-        print("Step: "+str(i)+", Adoption: "+str(total_adoption[i-1]))
+        pred[i-1]=tf.reduce_sum(adopt[:,i-1])
+        values=tf.clip_by_value(tf.nn.relu(tf.transpose(network(values))),0,1e2)
+        activation[i]=tf.reduce_sum(tf.cast(tf.math.greater(values[:,i-1], 0.), tf.float32))
+        tf.print("Step: ", i, ", Adoption: ", pred[i-1], " Activation: ", tf.math.reduce_max(activation))
+        
             
     return pred
     
 
-def marketing_mix_diffusion_residuals():
+def marketing_mix_cn_residuals(x):
+    p.assign(x[0])
+    q.assign(x[1])
+    w0.assign(x[2])
+    w1.assign(x[3])
+    w2.assign(x[4])
+    w3.assign(x[5])
+    w4.assign(x[6])
+    w5.assign(x[7])
+    w6.assign(x[8])
+    lamb.assign(x[9])
+    thresholds=[]
+    for i in range(10):
+        thresholds.append(x[9+i])
+    
     global t_train
     global G
     global bc
     global m
     global mmix
     global adoption
-    return tf.reduce_sum((adoption - marketing_mix_diffusion_cn(t_train,G,bc,m,mmix))**2)
-    
-res=tf.compat.v1.train.AdamOptimizer().minimize(marketing_mix_diffusion_residuals, var_list=[p,q,w0,w1,w2,w3,w4,w5,w6,thres])
+    global initial_values
+    loss=tf.reduce_sum((adoption[0:55] - marketing_mix_cn_model(t_train,G,bc,m,mmix,thresholds,initial_values))**2)
+    tf.print("Loss: ",loss)
+    print("")
+    return loss
+
+marketing_mix_cn_diffusion=minimize(
+    marketing_mix_cn_residuals, 
+    method='nelder-mead', 
+    x0=[5e-3,5e-3,5e-3,5e-3,5e-3,5e-3,1,1,0.5,2]+thresholds, 
+    )
