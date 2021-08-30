@@ -165,8 +165,8 @@ data=pd.read_csv(data_path+"\\Data\\Statistical\\mmm_data.csv",sep=";").set_inde
 m=data['Adoption'].iloc[-1]
 adoption=np.array(data['Adoption'])
 t=np.array(data.index)
-t_train=np.array(data.index)[:52]
-t_val=np.array(data.index)[52:60]
+t_train=np.array(data.index)[:50]
+t_val=np.array(data.index)[50:60]
 t_test=np.array(data.index)[60:]
 mmix=np.array(data[['Product','Price','Place','Promotion']])
 
@@ -238,11 +238,11 @@ def submodular_threshold_model(t,G,bc,m,mmix,thres,influencers,clipval=1e4):
         pred[i-1]=tf.reduce_sum(adopt[:,i-1])*tf.math.exp(-1/72)
         values=tf.clip_by_value(tf.nn.relu(tf.transpose(network(values))),0,clipval)
         activation[i]=tf.reduce_sum(tf.cast(tf.math.greater(values[:,i-1], 0.), tf.float32))
-        tf.print("Step: ", i, " Adoption:", pred[i-1], " Activation:", tf.math.reduce_max(activation))
+        #tf.print("Step: ", i, " Adoption:", pred[i-1], " Activation:", tf.math.reduce_max(activation))
 
     return pred
 
-def marketing_mix_cn_model(t,G,bc,m,mmix,thres,influencers,clipval=1e1,scale=1.61e6):
+def marketing_mix_cn_model(t,G,bc,m,mmix,thres,influencers,clipval=1e1,scale=1.61e6,train=True):
 
     global network    
     global link_classes
@@ -258,26 +258,24 @@ def marketing_mix_cn_model(t,G,bc,m,mmix,thres,influencers,clipval=1e1,scale=1.6
     f_i[:,:,0]=tf.multiply(np.exp(1/w4),values)+w5*np.exp(-1/w4)
     #import pdb;pdb.set_trace()
     u=np.zeros([1889])
-    adopt=np.zeros([1889,72])
     pred=np.zeros(len(t))
     activation=np.zeros(73)
-    activation[0]=10
-    for i in t:
-        radiation=w0+p*(-w1)*(mmix[i,1]+1e-12)*(m*w2*mmix[i,2]-bc)*w3*(mmix[i,3]+1e-12)
-        f_i[:,:,i]=tf.multiply(np.exp(i/w4),values)+w5*np.exp(-i/w4)
+    for i,ti in enumerate(t):
+        radiation=w0+p*(-w1)*(mmix[ti,1]+1e-12)*(m*w2*mmix[ti,2]-bc)*w3*(mmix[ti,3]+1e-12)
+        f_i[:,:,ti]=tf.multiply(np.exp(ti/w4),values)+w5*np.exp(-ti/w4)
         if i==1:
             u[:]=w5*np.exp(-t[0]/w4)
         else:
-            u[:]=w6*np.exp(-t[i-1]/w4)*tf.cast(tfp.math.trapz(np.exp(-t[0:i-1]/w4)*np.divide(np.exp(t[0:i-1]/w4)*tf.reduce_sum(tf.nn.relu(f_i[:,:,0:i-1]),axis=1)*mmix[0:i-1,0],w4)),dtype=tf.float32)+w5*np.exp(-t[i-1]/w4)
+            u[:]=w6*np.exp(-t[i]/w4)*tf.cast(tfp.math.trapz(np.exp(-t[0:i]/w4)*np.divide(np.exp(t[0:i]/w4)*tf.reduce_sum(tf.nn.relu(f_i[:,:,0:i]),axis=1)*mmix[0:i,0],w4)),dtype=tf.float32)+w5*np.exp(-t[i]/w4)
         diffusion=q*u[:]
-        adopt[:,i-1]=radiation+diffusion
         #import pdb;pdb.set_trace()
-        pred[i-1]=tf.cast(tf.reduce_sum(tf.nn.relu(adopt[:,i-1])),tf.float32)
-        pred[i-1]=tf.math.log(pred[i-1] + tf.math.sqrt(pred[i-1]**2 + w7))
-        pred[i-1]=tf.reduce_max(pred)
+        pred[i]=tf.cast(tf.reduce_sum(tf.nn.relu(radiation+diffusion)),tf.float32)
+        pred[i]=tf.math.log(pred[i] + tf.math.sqrt(pred[i]**2 + w7))
+        pred[i]=tf.reduce_max(pred)
         values=tf.clip_by_value(tf.nn.relu(tf.transpose(network(values))),-float('inf'),clipval)
         activation[i]=tf.reduce_max(tf.reduce_sum(tf.cast(tf.math.greater(values, 0.), tf.float32),axis=1))
-        #tf.print("Step: ", i, " Adoption:", pred[i-1]*scale, " Activation:", tf.reduce_max(activation))
+        if not Train:
+            tf.print("Step: ", ti, " Adoption:", pred[i]*scale, " Activation:", tf.reduce_max(activation))
     return pred*scale
 
 def marketing_mix_cn_validation(x):
@@ -301,8 +299,8 @@ def marketing_mix_cn_validation(x):
     global mmix
     global adoption
     global initial_values
-    loss=tf.reduce_sum((adoption[52:60] - marketing_mix_cn_model(t_val,G,bc,m,mmix,thresholds,initial_values))**2)
-    tf.print("Loss: ",loss)
+    loss=tf.reduce_sum((adoption[50:60] - marketing_mix_cn_model(t_val,G,bc,m,mmix,thresholds,initial_values))**2)
+    tf.print("Validation Loss: ",loss)
     return loss.numpy()
 
 def marketing_mix_cn_residuals(x):
@@ -326,28 +324,34 @@ def marketing_mix_cn_residuals(x):
     global mmix
     global adoption
     global initial_values
-    loss=tf.reduce_sum((adoption[0:52] - marketing_mix_cn_model(t_train,G,bc,m,mmix,thresholds,initial_values))**2)
-    tf.print("Loss: ",loss)
+    loss=tf.reduce_sum((adoption[0:50] - marketing_mix_cn_model(t_train,G,bc,m,mmix,thresholds,initial_values))**2)
+    tf.print("Training Loss: ",loss)
     return loss.numpy()
 
 val=[]
 for i in range(300):
-    print("Starting training epoch "+str(i+1))
-    marketing_mix_cn_diffusion=minimize(
-        marketing_mix_cn_residuals,
-        jac=lambda x: approx_fprime(x, marketing_mix_cn_residuals, 1e-12), 
-        method='nelder-mead', 
-        x0=[5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,12,2]+thresholds, 
-        options={'maxfev':1,'disp':True, 'return_all':True}
-        )
-    x=marketing_mix_cn_diffusion.x
+    print("Iteration "+str(i+1))
+    if i==0:
+        marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
+            objective_function=marketing_mix_cn_residuals,
+            initial_vertex=tf.constant([5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,12,2]+thresholds), 
+            max_iterations=tf.constant(1)
+            )
+    else:
+        marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
+            objective_function=marketing_mix_cn_residuals,
+            initial_vertex=x, 
+            max_iterations=tf.constant(1)
+            )
+    x=marketing_mix_cn_diffusion.position
     val.append(marketing_mix_cn_validation(x))
     if len(val)>1:
         if val[-1]>val[-2]:
+            print("Early Stopping Condition Met.")
             break
     
 
-x=marketing_mix_cn_diffusion.x
+x=marketing_mix_cn_diffusion.position
 p.assign(x[0])
 q.assign(x[1])
 w0.assign(x[2])
@@ -360,9 +364,9 @@ w6.assign(x[8])
 w7.assign(x[9])
 thresholds=[]
 for i in range(10):
-    thresholds.append(x[9+i])
+    thresholds.append(x[10+i])
         
     
-marketing_mix_cn_model(t_train,G,bc,m,mmix,thresholds,initial_values)
+marketing_mix_cn_forecast_is=marketing_mix_cn_model(t_train,G,bc,m,mmix,thresholds,initial_values,train=False)
 
 influencers=kempe_greedy_algorithm(G,submodular_marketing_threshold_model,t,G,bc,m,mmix,thresholds,initial_values)
