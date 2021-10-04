@@ -213,6 +213,79 @@ def f(i:float,u:float,bc:float,p:float,q:float,m:int,w0:float,w1:float,w2:float,
         promo=w3*(__promo-min_promo)/(max_promo-min_promo)
 
         return bc+w0+(p*pric+q*u)*(m*plac-bc)*promo
+    
+def _f(i:float,u:float,bc:float,p:float,q:float,m:int,w0:float,w1:float,w2:float,w3:float,w4:float,w5:float):
+
+        #Polynomial Interpolation
+            
+        #Price - See spreadsheet "Price" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+        p0=0.7238312454
+        p1=-0.009686677157
+        p2=0.0001198351799
+        p3=-0.00001543875789
+        p4=1.30E-07
+        __pric=p0+p1*i+p2*(i**2)+p3*(i**3)+p4*(i**4)
+        #Normalization
+        min_pric=-1.6207472
+        max_pric=0.7142491
+        pric=w1*(__pric-min_pric)/(max_pric-min_pric)
+        
+        #Place - See spreadsheet "Distribution" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+        p0=-4.590334248
+        p1=-0.009876083408
+        p2=0.000929745442
+        p3=-0.00004219246514
+        p4=3.48E-07
+        __plac=p0+p1*i+p2*(i**2)+p3*(i**3)+p4*(i**4)
+        #Normalization
+        min_plac=-6.88E+00
+        max_plac=-4.60E+00
+        plac=w2*(__plac-min_plac)/(max_plac-min_plac)
+
+        #Promotion - See spreadsheet "Advertising" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+        p0=-2.90E-04
+        p1=5.48E-02
+        p2=-3.13E+00
+        p3=1.37E+02
+        p4=2.06E+04         
+        __promo=p0+p1*i+p2*(i**2)+p3*(i**3)+p4*(i**4)
+        #Normalization
+        min_promo=20733.97
+        max_promo=26908.49
+        promo=w3*(__promo-min_promo)/(max_promo-min_promo)
+
+        return tf.cast(bc,tf.float32)+tf.cast(w0,tf.float32)+tf.math.multiply(
+                tf.math.multiply(
+                    tf.math.add(
+                        tf.math.multiply(
+                            tf.cast(p,tf.float32),
+                            tf.cast(pric,tf.float32)),
+                        tf.math.multiply(
+                            tf.cast(q,tf.float32),
+                            tf.cast(u,tf.float32))),
+                    tf.math.add(
+                        tf.math.multiply(
+                            tf.cast(m,tf.float32),
+                            tf.cast(plac,tf.float32)),
+                        -tf.cast(bc,tf.float32))),
+                    tf.cast(promo,tf.float32))
+
+def _u_i(i):
+    #Exponential Interpolation
+    #Product - See spreadsheet "Product" in https://docs.google.com/spreadsheets/d/1pbBUsyReOX6y5hdoTWQkeU3hxhrW_7WOdALjrJT1y7I/edit?usp=sharing
+    a=5.195836994
+    b=0.02509865638
+    _prod=a*tf.math.exp(b*i)
+    
+    #Perceived Quality transformation using Weber-Fechner Law which linearizes product quality
+    min_quality_threshold=0.01 #mbps
+    weber_fechner_constant=1
+    __prod=weber_fechner_constant*tf.math.log(_prod/min_quality_threshold)
+    #Normalization and Weighting
+    min_prod=6.278126569
+    max_prod=8.060131172
+
+    return tf.math.divide((__prod-min_prod),(max_prod-min_prod))
 
 
 solveVolterraJIT=jit(inteq.SolveVolterra)
@@ -361,31 +434,18 @@ def gmm_residuals(x,f,t,mmix,bc):
     w3=x[5]
     w6=x[6]
     m=x[7]
-    loss= np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+np.sum(np.abs(x)**2)
+    
+    penalty=0 if m>0 else m**2
+    loss= 0.05*np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+0.90*penalty
     #print(loss)
+    #+0.05*np.sum(np.abs(x)**2)
     #print("Marketing Mix Diffusion training")
     print("Loss: "+str(loss))
     return loss
 
-# gmm_diffusion=differential_evolution(
-#     gmm_residuals, 
-#     args=(adoption[:60],t_train,m,mmix,bc),
-#     bounds=(
-#         (0,1e-2),
-#         (0,1e-100),
-#         (0,1),
-#         (-1,0),
-#         (0,1),
-#         (0,1),
-#         (1,500),
-#         (1,500),
-#         (0,1e-100),
-#         )
-#     )
-
 x0=[ 1.00000000e-002,  7.83110479e-101,  1.00000000e+000,
         -1.00000000e+000,  0.00000000e+000, -1.00000000e+000,
-        3.96644485e-002,  3.15104987e-002,  -6.05183820e-101,2e7]
+        3.96644485e-002,  2e7]
 
 gmm_diffusion=minimize(
     gmm_residuals, 
@@ -393,17 +453,7 @@ gmm_diffusion=minimize(
     jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
     x0=x0,
     args=(adoption[:60],t_train,mmix,bc),
-    options={'learning_rate':1e-12,'maxiter':100},
-    #options={'learning_rate':1e-12,'maxiter':500},
-        bounds=(
-        (0,1),
-        (0,1),
-        (-1,1),
-        (-1,0),
-        (0,1),
-        (0,1),
-        (-1,0)
-        )
+    options={'learning_rate':1e-12,'maxiter':100}
     )
 
 
@@ -479,7 +529,7 @@ def agmm_residuals(x,f,t,mmix,bc):
 
 x0=[ 1.00000000e-002,  7.83110479e-101,  1.00000000e+000,
         -1.00000000e+000,  0.00000000e+000, -1.00000000e+000,
-        3.96644485e-002,  3.15104987e-002,  -6.05183820e-101, 2e7]
+        3.96644485e-002, 2e7]
 
 agmm_diffusion=minimize(
     agmm_residuals, 
@@ -496,7 +546,8 @@ agmm_diffusion=minimize(
         (-1,0),
         (0,1),
         (0,1),
-        (-1,0)
+        (-1,0),
+        (1.5e7,2e7)
         )
     )
 
@@ -524,21 +575,23 @@ forecasts=pd.DataFrame({
 forecasts.to_excel(data_path+"\\results.xlsx")
 
 #Optimal Control
+import tensorflow as tf
+import tensorflow_probability as tfp
 import control
 from control import optimal
-from scipy.optimize import LinearConstraint
+from scipy.optimize import LinearConstraint, NonlinearConstraint
 
-budget=mmix[60:72,:].sum()
+try:
+    tf.compat.v1.enable_eager_execution()
+except:
+    pass
 
-X0=-adoption[60-1]
+budget=(mmix[60:72,:].sum())/12 #average monthly budget
 
-constraints=[
-    (LinearConstraint(np.identity(4),0,1),np.identity(4),0,1),
-    (LinearConstraint(np.ones(4),0,budget),np.ones(4),0,budget)
-    ]
+X0=[adoption[60-1]]
 
-def cost(t,x,u):
-    return u.sum() #cost of the marketing mix variables
+c1=np.ones(5)
+c1[4]=0
 
 def gmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
     p=params.get('Coefficient of Innovation')
@@ -551,20 +604,17 @@ def gmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
     w6=params.get('Product Quality Impact')
     price=w1*u[1]+eps
     place=w2*u[2]+eps
-    promotion=w3*np.sqrt(u[3])+eps
-    sales=x
+    promotion=w3*tf.math.sqrt(u[3])+eps
+    sales=tf.cast(tf.broadcast_to(x, (1,12)),"float32")
 
     #Compute product trajectory approximation and sales using the previous product value
-    product=[w6*w5*math.exp(-1/w4)]
-    
-    if t>1:
-        for i in range(2,t):
-            product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-            
-    product=product[-1]
-    
+    prod=[w6*w5*math.exp(-1/w4)]
+
+    i=tf.cast(t,"float64")
+    product=tf.cast(w6*tf.math.exp(-i/w4)*tfp.math.trapz(tf.math.divide(tf.math.exp(i/w4)*tf.cast(_f(i,prod[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5),"float64")*_u_i(i),w4),dx=1/1000)+w5*tf.math.exp(-i/w4),"float32")
+
     sales+=w0+(p*price+q*product)*(m*place-sales)*promotion
-    adoption=sales
+    adoption=tf.reduce_max(tf.concat([tf.zeros((1,12)),sales],axis=0),axis=0)
     return adoption
 
 def agmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
@@ -578,29 +628,55 @@ def agmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
     w6=params.get('Product Quality Impact')
     price=w1*u[1]+eps
     place=w2*u[2]+eps
-    promotion=w3*np.sqrt(u[3])+eps
-    sales=x
+    promotion=w3*tf.math.sqrt(u[3])+eps
+    sales=tf.cast(tf.broadcast_to(x, (1,12)),"float32")
 
     #Compute product trajectory approximation and sales using the previous product value
-    product=[w6*w5*math.exp(-1/w4)]
+    prod=[w6*w5*math.exp(-1/w4)]
+
+    i=tf.cast(t,"float64")
+    prod=tf.cast(w6*tf.math.exp(-i/w4)*tfp.math.trapz(tf.math.divide(tf.math.exp(i/w4)*tf.cast(_f(i,prod[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5),"float64")*_u_i(i),w4),dx=1/1000)+w5*tf.math.exp(-i/w4),"float32")
+    product=prod[-1]
     
-    if t>1:
-        for i in range(2,t):
-            product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-        
-    product=product[-1]
-    
-    if t == 1:
-        radiation=p*price*(m*place-sales)*promotion
-        diffusion=q*product
-        sales+=w0+radiation+diffusion
-        adoption=sales
-        return adoption
     radiation=p*price*(m*place-sales)*promotion
     diffusion=q*product
     sales+=w0+radiation+diffusion
-    adoption=sales
+    adoption=tf.reduce_max(tf.concat([tf.zeros((1,12)),[sales]],axis=0),axis=0)
+
     return adoption
+
+
+def cost_gmm(u):
+    #penalized **-1 cost revenue ratio
+    #import pdb; pdb.set_trace()
+    # u=tf.gather(x,[1,2,3,4],axis=1)
+    # x=tf.gather(x,[0],axis=1)
+    x=u
+    p=x[1]+1e-12
+    u=tf.concat([[x[0]],x[2:4]],axis=0)
+    _u=x[0:4]
+
+    global t_test
+    global params
+    global X0
+
+    revenue=p*gmm_dynamics(t_test,X0,_u,params)+1e-12
+    cost=tf.reduce_sum(u)+1e-12
+    
+    inv_cost_revenue_ratio=tf.reduce_sum(cost)/tf.reduce_sum(revenue)
+    
+    global budget
+    penalty=tf.math.reduce_sum(tf.boolean_mask(u,tf.math.logical_or(tf.greater(u,1),tf.less(u,0))))**2
+    penalty+=tf.cond(tf.greater(tf.reduce_sum(u),budget),lambda: tf.reduce_sum(u)**2,lambda: 0.0)
+    #penalty = np.sum([0 if 0<i<1 else i for i in u])**2
+    #penalty+= 0 if tf.math.reduce_sum(u)<budget else tf.math.reduce_sum(u)**2
+    return inv_cost_revenue_ratio+penalty #cost of the marketing mix variables
+
+constraints=[
+    (LinearConstraint,c1,0,1),
+    (NonlinearConstraint,cost,0,budget)
+    ]
+
 
 #Using MMD
 p=gmm_diffusion.x[0]
@@ -612,21 +688,32 @@ w3=gmm_diffusion.x[5]
 w6=gmm_diffusion.x[6]
 m=gmm_diffusion.x[7]
 
-X0=adoption[60-1]
+params={
+        'Coefficient of Innovation':p, 
+        'Coefficient of Imitation':q, 
+        'Market Potential': m,
+        'Baseline Adoption': w0,
+        'Price Elasticity': w1,
+        'Distribution Intensity': w2,
+        'Advertising Investment': w3,
+        'Product Quality Impact': w6
+        }
+
+
 sys=control.NonlinearIOSystem(updfcn=gmm_dynamics,
                               inputs=['Product','Price','Place','Promotion'], 
                               outputs=['Adoption'], 
                               dt=1, 
                               states=['Adoption'],
                               name="Dynamic Marketing System",  
-                              params={
-                                  'Coefficient of Innovation':p, 
-                                  'Coefficient of Imitation':q, 
-                                  'Market Potential': m,
-                                  'Baseline Adoption': w0,
-                                  'Price Elasticity': w1,
-                                  'Distribution Intensity': w2,
-                                  'Advertising Investment': w3,
-                                  'Product Quality Impact': w6
-                                  })
-res_gmm=optimal.solve_ocp(sys, t_test, X0, cost, constraints)
+                              params=params)
+
+with tf.device('/device:GPU:0'):
+    res_gmm=optimal.solve_ocp(
+        sys, 
+        t_test, 
+        X0, 
+        cost_gmm, 
+        constraints,
+        initial_guess=tf.zeros([4,12])
+        )
