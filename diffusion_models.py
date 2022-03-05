@@ -385,8 +385,9 @@ mesak_diffusion=minimize(
     bounds=(
         (0,1),
         (0,1),
-        (-1,1),
+        (0,1e6),
         (-1,0),
+        (0,1),
         (0,1),
         (1.5e7,2e7)
         ),
@@ -404,74 +405,74 @@ mesak_forecast_is=mesak_model(t_train,p,q,m,mmix,bc,w0,w1,w2,w3)
 mesak_forecast_oos=mesak_model(t_test,p,q,m,mmix,adoption[60-1],w0,w1,w2,w3)
 mesak_forecast=mesak_forecast_is+mesak_forecast_oos
 
-# #General Marketing Mix Modelling (GMM)
-def gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
-    price=w1*mmix[:,1]+eps
-    place=w2*mmix[:,2]+eps
-    promotion=w3*np.sqrt(mmix[:,3])+eps
-    sales=bc
-    adoption=[]
+# # #General Marketing Mix Modelling (GMM)
+# def gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
+#     price=w1*mmix[:,1]+eps
+#     place=w2*mmix[:,2]+eps
+#     promotion=w3*np.sqrt(mmix[:,3])+eps
+#     sales=bc
+#     adoption=[]
 
-    #Compute product trajectory approximation and sales using the previous product value
-    product=[w6*w5*math.exp(-1/w4)]
-    for i in t:
-        if i == 1:
-            sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
-            adoption.append(max(0,sales))
-            continue
-        product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
-        sales+=w0+(p*price[i-1]+q*product[-1])*(m*place[i-1]-sales)*promotion[i-1]
-        adoption.append(max(0,sales))
+#     #Compute product trajectory approximation and sales using the previous product value
+#     product=[w6*w5*math.exp(-1/w4)]
+#     for i in t:
+#         if i == 1:
+#             sales+=w0+(p*price[i-1]+q*product[i-1])*(m*place[i-1]-sales)*promotion[i-1]
+#             adoption.append(max(0,sales))
+#             continue
+#         product.append(w6*math.exp(-i/w4)*solveVolterraJIT(lambda x,y: np.ones(y.shape),lambda x: np.divide(np.exp(x/w4)*f(x,product[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5)*u_i(x),w4), 1, i)[-1,-1]+w5*math.exp(-i/w4))
+#         sales+=w0+(p*price[i-1]+q*product[-1])*(m*place[i-1]-sales)*promotion[i-1]
+#         adoption.append(max(0,sales))
         
-    return adoption
+#     return adoption
 
-def gmm_residuals(x,f,t,mmix,bc):
-    p=x[0]
-    q=x[1]
-    w0=x[2]
-    w1=x[3]
-    w2=x[4]
-    w3=x[5]
-    w6=x[6]
-    m=x[7]
+# def gmm_residuals(x,f,t,mmix,bc):
+#     p=x[0]
+#     q=x[1]
+#     w0=x[2]
+#     w1=x[3]
+#     w2=x[4]
+#     w3=x[5]
+#     w6=x[6]
+#     m=x[7]
     
-    penalty=0 if m>0 else m**2
-    loss= 0.05*np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+0.90*penalty
-    #print(loss)
-    #+0.05*np.sum(np.abs(x)**2)
-    #print("Marketing Mix Diffusion training")
-    print("Loss: "+str(loss))
-    return loss
+#     penalty=0 if m>0 else m**2
+#     loss= 0.05*np.sum((gmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)-f)**2)+0.90*penalty
+#     #print(loss)
+#     #+0.05*np.sum(np.abs(x)**2)
+#     #print("Marketing Mix Diffusion training")
+#     print("Loss: "+str(loss))
+#     return loss
 
-x0=[ 1.00000000e-002,  7.83110479e-101,  1.00000000e+000,
-        -1.00000000e+000,  0.00000000e+000, -1.00000000e+000,
-        3.96644485e-002,  2e7]
+# x0=[ 1.00000000e-002,  7.83110479e-101,  1.00000000e+000,
+#         -1.00000000e+000,  0.00000000e+000, -1.00000000e+000,
+#         3.96644485e-002,  2e7]
 
-gmm_diffusion=minimize(
-    gmm_residuals, 
-    method='nelder-mead',
-    jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
-    x0=x0,
-    args=(adoption[:60],t_train,mmix,bc),
-    options={'learning_rate':1e-12,'maxiter':100}
-    )
+# gmm_diffusion=minimize(
+#     gmm_residuals, 
+#     method='nelder-mead',
+#     jac=lambda x,f,t,m,mmix,bc: approx_fprime(x, agmm_residuals, 1e-12,f,t,m,mmix,bc), 
+#     x0=x0,
+#     args=(adoption[:60],t_train,mmix,bc),
+#     options={'learning_rate':1e-12,'maxiter':100}
+#     )
 
 
-# x0=gmm_diffusion.x
+# # x0=gmm_diffusion.x
 
-p=gmm_diffusion.x[0]
-q=gmm_diffusion.x[1]
-w0=gmm_diffusion.x[2]
-w1=gmm_diffusion.x[3]
-w2=gmm_diffusion.x[4]
-w3=gmm_diffusion.x[5]
-w6=gmm_diffusion.x[6]
-m=gmm_diffusion.x[7]
-gmm_forecast_is=gmm_model(t_train,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
-gmm_forecast_oos=gmm_model(t_test,p,q,m,mmix,adoption[60-1],w0,w1,w2,w3,1e3,1e3,w6)
-gmm_forecast=gmm_forecast_is+gmm_forecast_oos
+# p=gmm_diffusion.x[0]
+# q=gmm_diffusion.x[1]
+# w0=gmm_diffusion.x[2]
+# w1=gmm_diffusion.x[3]
+# w2=gmm_diffusion.x[4]
+# w3=gmm_diffusion.x[5]
+# w6=gmm_diffusion.x[6]
+# m=gmm_diffusion.x[7]
+# gmm_forecast_is=gmm_model(t_train,p,q,m,mmix,bc,w0,w1,w2,w3,1e3,1e3,w6)
+# gmm_forecast_oos=gmm_model(t_test,p,q,m,mmix,adoption[60-1],w0,w1,w2,w3,1e3,1e3,w6)
+# gmm_forecast=gmm_forecast_is+gmm_forecast_oos
 
-#Additive GMM (AGMM)
+#Marketing Mix Diffusion (MMD)
 def agmm_model(t,p,q,m,mmix,bc,w0,w1,w2,w3,w4,w5,w6,eps=1e-2):  
     price=w1*mmix[:,1]+eps
     place=w2*mmix[:,2]+eps
@@ -542,11 +543,11 @@ agmm_diffusion=minimize(
     bounds=(
         (0,1),
         (0,1),
-        (-1,1),
+        (0,1e6),
         (-1,0),
         (0,1),
         (0,1),
-        (-1,0),
+        (0,1),
         (1.5e7,2e7)
         )
     )
@@ -568,8 +569,7 @@ forecasts=pd.DataFrame({
     'Observed':adoption,
     'Bass Diffusion':bass_forecast,
     'Mesak Diffusion':mesak_forecast,
-    'General Marketing Mix Model':gmm_forecast,
-    'Additive General Marketing Mix Model':agmm_forecast
+    'Marketing Mix Diffusion':agmm_forecast
     },index=t)
 
 forecasts.to_excel(data_path+"\\results.xlsx")
@@ -586,12 +586,50 @@ try:
 except:
     pass
 
-budget=(mmix[60:72,:].sum())/12 #average monthly budget
+budget=(mmix[60:72,0].sum()+mmix[60:72,2:4].sum())/(12*3) #average monthly budget for product, place and promotion
 
 X0=[adoption[60-1]]
 
 c1=np.ones(5)
 c1[4]=0
+
+def mesak_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):    
+    p=params.get('Coefficient of Innovation')
+    q=params.get('Coefficient of Innovation')
+    m=params.get('Market Potential')
+    w0=params.get('Baseline Adoption')
+    w1=params.get('Price Elasticity')
+    w2=params.get('Distribution Intensity')
+    w3=params.get('Advertising Investment')
+    price=w1*u[0]+eps
+    place=w2*u[1]+eps
+    promotion=w3*tf.math.sqrt(u[2])+eps
+    if len(x)==1:
+        prev_sales=x
+    else:
+        prev_sales=x[-1]
+    sales=[]
+    
+    if np.isscalar(t):
+        t=[t]
+    for index,i in enumerate(t):
+        i=tf.cast(i,"float64")
+        if tf.rank(prev_sales)>0:
+            prev_sales=prev_sales[-1]
+        if len(sales)>0:
+            max_sales=max(sales)
+        else:
+            max_sales=prev_sales
+        
+        if len(u.shape)==1:
+            sales.append(max(max_sales,tf.cast(w0+(tf.cast(p*price,"float64")+q*prev_sales)*(tf.cast(m*place-prev_sales,"float64"))*tf.cast(promotion,"float64"),"float64")))
+        else:
+            sales.append(max(max_sales,tf.cast(w0+(tf.cast(p*price[index],"float64")+q*prev_sales)*(tf.cast(m*place[index]-prev_sales,"float64"))*tf.cast(promotion[index],"float64"),"float64")))
+        prev_sales=sales[-1]
+        #print(sales)
+        
+    adoption=tf.reduce_max(tf.concat([tf.zeros(tf.shape(sales)),sales],axis=0),axis=0)
+    return adoption
 
 def gmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
     p=params.get('Coefficient of Innovation')
@@ -605,16 +643,34 @@ def gmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
     price=w1*u[1]+eps
     place=w2*u[2]+eps
     promotion=w3*tf.math.sqrt(u[3])+eps
-    sales=tf.cast(tf.broadcast_to(x, (1,12)),"float32")
+    if len(x)==1:
+        prev_sales=x
+    else:
+        prev_sales=x[-1]
+    sales=[]
 
-    #Compute product trajectory approximation and sales using the previous product value
-    prod=[w6*w5*math.exp(-1/w4)]
-
-    i=tf.cast(t,"float64")
-    product=tf.cast(w6*tf.math.exp(-i/w4)*tfp.math.trapz(tf.math.divide(tf.math.exp(i/w4)*tf.cast(_f(i,prod[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5),"float64")*_u_i(i),w4),dx=1/1000)+w5*tf.math.exp(-i/w4),"float32")
-
-    sales+=w0+(p*price+q*product)*(m*place-sales)*promotion
-    adoption=tf.reduce_max(tf.concat([tf.zeros((1,12)),sales],axis=0),axis=0)
+    product=tf.convert_to_tensor(tf.cast(w6*w5*math.exp(-1/w4),"float64"))
+    
+    if np.isscalar(t):
+        t=[t]
+    for index,i in enumerate(t):
+        i=tf.cast(i,"float64")
+        product=tf.cast(w6*tf.math.exp(-i/w4)*tfp.math.trapz([tf.math.divide(tf.math.exp(i/w4)*tf.cast(_f(i,product,prev_sales,p,q,m,w0,w1,w2,w3,w4,w5),"float64")*_u_i(i),w4)],dx=1e-3)+w5*tf.math.exp(-i/w4),"float64")
+        if tf.rank(prev_sales)>0:
+            prev_sales=prev_sales[-1]
+        if len(sales)>0:
+            max_sales=max(sales)
+        else:
+            max_sales=prev_sales
+        
+        if len(u.shape)==1:
+            sales.append(max(max_sales,tf.cast(w0+(tf.cast(p*price,"float64")+q*product)*(tf.cast(m*place-prev_sales,"float64"))*tf.cast(promotion,"float64"),"float32")))
+        else:
+            sales.append(max(max_sales,tf.cast(w0+(tf.cast(p*price[index],"float64")+q*product)*(tf.cast(m*place[index]-prev_sales,"float64"))*tf.cast(promotion[index],"float64"),"float32")[0]))
+        prev_sales=sales[-1]
+        #print(sales)
+        
+    adoption=tf.reduce_max(tf.concat([tf.zeros(tf.shape(sales)),sales],axis=0),axis=0)
     return adoption
 
 def agmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
@@ -629,48 +685,153 @@ def agmm_dynamics(t, x, u, params, eps=1e-2, w4=1e3, w5=1e3):
     price=w1*u[1]+eps
     place=w2*u[2]+eps
     promotion=w3*tf.math.sqrt(u[3])+eps
-    sales=tf.cast(tf.broadcast_to(x, (1,12)),"float32")
 
-    #Compute product trajectory approximation and sales using the previous product value
-    prod=[w6*w5*math.exp(-1/w4)]
+    if len(x)==1:
+        prev_sales=x
+    else:
+        prev_sales=x[-1]
+    sales=[]
 
-    i=tf.cast(t,"float64")
-    prod=tf.cast(w6*tf.math.exp(-i/w4)*tfp.math.trapz(tf.math.divide(tf.math.exp(i/w4)*tf.cast(_f(i,prod[-1],sales,p,q,m,w0,w1,w2,w3,w4,w5),"float64")*_u_i(i),w4),dx=1/1000)+w5*tf.math.exp(-i/w4),"float32")
-    product=prod[-1]
+    product=tf.convert_to_tensor(tf.cast(w6*w5*math.exp(-1/w4),"float64"))
     
-    radiation=p*price*(m*place-sales)*promotion
-    diffusion=q*product
-    sales+=w0+radiation+diffusion
-    adoption=tf.reduce_max(tf.concat([tf.zeros((1,12)),[sales]],axis=0),axis=0)
-
+    if np.isscalar(t):
+        t=[t]
+    for index,i in enumerate(t):
+        i=tf.cast(i,"float64")
+        product=tf.cast(w6*tf.math.exp(-i/w4)*tfp.math.trapz([tf.math.divide(tf.math.exp(i/w4)*tf.cast(_f(i,product,prev_sales,p,q,m,w0,w1,w2,w3,w4,w5),"float64")*_u_i(i),w4)],dx=1e-3)+w5*tf.math.exp(-i/w4),"float64")
+        if tf.rank(prev_sales)>0:
+            prev_sales=prev_sales[-1]
+        if len(sales)>0:
+            max_sales=max(sales)
+        else:
+            max_sales=prev_sales
+        
+        #import pdb;pdb.set_trace()
+        if len(u.shape)==1:
+            radiation=tf.cast(w0+(tf.cast(p*price,"float64"))*(tf.cast(m*place-prev_sales,"float64"))*tf.cast(promotion,"float64"),"float32")
+            diffusion=tf.cast(q*product,"float32")
+            new_sales=w0+radiation+diffusion
+            sales.append(max(max_sales,new_sales))
+        else:
+            radiation=tf.cast(w0+(tf.cast(p*price[index],"float64"))*(tf.cast(m*place[index]-prev_sales,"float64"))*tf.cast(promotion[index],"float64"),"float32")
+            diffusion=tf.cast(q*product,"float32")
+            new_sales=w0+radiation+diffusion
+            sales.append(max(max_sales,new_sales))
+        prev_sales=sales[-1]
+        #print(sales)
+        
+    adoption=tf.reduce_max(tf.concat([tf.zeros(tf.shape(sales)),sales],axis=0),axis=0)
     return adoption
 
 
-def cost_gmm(u):
-    #penalized **-1 cost revenue ratio
-    #import pdb; pdb.set_trace()
-    # u=tf.gather(x,[1,2,3,4],axis=1)
-    # x=tf.gather(x,[0],axis=1)
+def cost(u):
+    #penalized neg profit
     x=u
     p=x[1]+1e-12
     u=tf.concat([[x[0]],x[2:4]],axis=0)
     _u=x[0:4]
+    
+    price_norm_constant=24.21560221
+   
+    price=(1+price_norm_constant)*p
 
     global t_test
     global params
     global X0
-
-    revenue=p*gmm_dynamics(t_test,X0,_u,params)+1e-12
-    cost=tf.reduce_sum(u)+1e-12
     
-    inv_cost_revenue_ratio=tf.reduce_sum(cost)/tf.reduce_sum(revenue)
+    m=params.get('Market Potential')
     
+    max_price=1+price_norm_constant
+    max_revenue=max_price*m*len(t_test)
+    
+    max_cost=u.shape[0]*u.shape[1]
+    
+    sales=gmm_dynamics(t_test,X0,_u,params)#tf.math.reduce_max(gmm_dynamics(t_test,X0,_u,params))+1e-12
+    revenue=(tf.reduce_sum(price*sales)/max_revenue)+1e-12
+    cost=(tf.reduce_sum(u)/max_cost)+1e-12
+    #import pdb; pdb.set_trace()
     global budget
-    penalty=tf.math.reduce_sum(tf.boolean_mask(u,tf.math.logical_or(tf.greater(u,1),tf.less(u,0))))**2
-    penalty+=tf.cond(tf.greater(tf.reduce_sum(u),budget),lambda: tf.reduce_sum(u)**2,lambda: 0.0)
-    #penalty = np.sum([0 if 0<i<1 else i for i in u])**2
-    #penalty+= 0 if tf.math.reduce_sum(u)<budget else tf.math.reduce_sum(u)**2
-    return inv_cost_revenue_ratio+penalty #cost of the marketing mix variables
+    penalty=1e3*tf.math.reduce_sum(tf.boolean_mask(_u,tf.math.logical_or(tf.greater(_u,1),tf.less(_u,0))))**2
+    penalty+=tf.cond(tf.logical_or(tf.greater(revenue,1),tf.less(revenue,0)),lambda: (revenue*1e5)**2,lambda: 0.0)
+    penalty+=tf.cond(tf.logical_or(tf.greater(cost,1),tf.less(cost,0)),lambda: (cost*1e5)**2,lambda: 0.0)
+    penalty+=tf.cond(tf.greater(cost,budget),lambda: cost**2,lambda: 0.0)
+    print("Sales: "+str(tf.math.reduce_max(sales).numpy()))
+    penalty+=tf.cond(tf.less(tf.math.reduce_max(sales),17000000),lambda: tf.math.abs(17000000-tf.math.reduce_max(sales)),lambda: 0.0)
+    #print(""+str(-revenue.numpy())+" + "+str(cost.numpy())+" + "+str(penalty.numpy()))
+    return -revenue + cost + penalty
+
+def cost_additive(u):
+    #penalized neg profit
+    x=u
+    p=x[1]+1e-12
+    u=tf.concat([[x[0]],x[2:4]],axis=0)
+    _u=x[0:4]
+    
+    price_norm_constant=24.21560221
+   
+    price=(1+price_norm_constant)*p
+
+    global t_test
+    global params
+    global X0
+    
+    m=params.get('Market Potential')
+    
+    max_price=1+price_norm_constant
+    max_revenue=max_price*m*len(t_test)
+    
+    max_cost=u.shape[0]*u.shape[1]
+    
+    sales=agmm_dynamics(t_test,X0,_u,params)#tf.math.reduce_max(gmm_dynamics(t_test,X0,_u,params))+1e-12
+    revenue=(tf.reduce_sum(price*sales)/max_revenue)+1e-12
+    cost=(tf.reduce_sum(u)/max_cost)+1e-12
+    #import pdb; pdb.set_trace()
+    global budget
+    penalty=1e3*tf.math.reduce_sum(tf.boolean_mask(_u,tf.math.logical_or(tf.greater(_u,1),tf.less(_u,0))))**2
+    penalty+=tf.cond(tf.logical_or(tf.greater(revenue,1),tf.less(revenue,0)),lambda: (revenue*1e5)**2,lambda: 0.0)
+    penalty+=tf.cond(tf.logical_or(tf.greater(cost,1),tf.less(cost,0)),lambda: (cost*1e5)**2,lambda: 0.0)
+    penalty+=tf.cond(tf.greater(cost,budget),lambda: cost**2,lambda: 0.0)
+    print("Sales: "+str(tf.math.reduce_max(sales).numpy()))
+    penalty+=tf.cond(tf.less(tf.math.reduce_max(sales),17000000),lambda: tf.math.abs(17000000-tf.math.reduce_max(sales)),lambda: 0.0)
+    #print(""+str(-revenue.numpy())+" + "+str(cost.numpy())+" + "+str(penalty.numpy()))
+    return -revenue + cost + penalty
+
+def cost_mesak(u):
+    #penalized neg profit
+    x=u
+    p=x[1]+1e-12
+    u=tf.concat([[x[0]],x[2:4]],axis=0)
+    _u=x[0:4]
+    
+    price_norm_constant=24.21560221
+   
+    price=(1+price_norm_constant)*p
+
+    global t_test
+    global params
+    global X0
+    global prod_obs
+    
+    m=params.get('Market Potential')
+    
+    max_price=1+price_norm_constant
+    max_revenue=max_price*m*len(t_test)
+    
+    max_cost=u.shape[0]*u.shape[1]
+    
+    sales=mesak_dynamics(t_test,X0,_u,params)#tf.math.reduce_max(gmm_dynamics(t_test,X0,_u,params))+1e-12
+    revenue=(tf.reduce_sum(price*sales)/max_revenue)+1e-12
+    cost=((tf.reduce_sum(u)+tf.reduce_sum(prod_obs[t_test-1]))/max_cost)+1e-12
+    #import pdb; pdb.set_trace()
+    global budget
+    penalty=1e3*tf.math.reduce_sum(tf.boolean_mask(_u,tf.math.logical_or(tf.greater(_u,1),tf.less(_u,0))))**2
+    penalty+=tf.cond(tf.logical_or(tf.greater(revenue,1),tf.less(revenue,0)),lambda: (revenue*1e5)**2,lambda: 0.0)
+    penalty+=tf.cond(tf.logical_or(tf.greater(cost,1),tf.less(cost,0)),lambda: (cost*1e5)**2,lambda: 0.0)
+    penalty+=tf.cond(tf.greater(cost,budget),lambda: cost**2,lambda: 0.0)
+    #print("Sales: "+str(tf.math.reduce_max(sales).numpy()))
+    penalty+=tf.cond(tf.less(tf.math.reduce_max(sales),17000000),lambda: tf.math.abs(17000000-tf.math.reduce_max(sales)),lambda: 0.0)
+    #print(""+str(-revenue.numpy())+" + "+str(cost.numpy())+" + "+str(penalty.numpy()))
+    return -revenue + cost + penalty
 
 constraints=[
     (LinearConstraint,c1,0,1),
@@ -679,14 +840,70 @@ constraints=[
 
 
 #Using MMD
-p=gmm_diffusion.x[0]
-q=gmm_diffusion.x[1]
-w0=gmm_diffusion.x[2]
-w1=gmm_diffusion.x[3]
-w2=gmm_diffusion.x[4]
-w3=gmm_diffusion.x[5]
-w6=gmm_diffusion.x[6]
-m=gmm_diffusion.x[7]
+# p=gmm_diffusion.x[0]
+# q=gmm_diffusion.x[1]
+# w0=gmm_diffusion.x[2]
+# w1=gmm_diffusion.x[3]
+# w2=gmm_diffusion.x[4]
+# w3=gmm_diffusion.x[5]
+# w6=gmm_diffusion.x[6]
+# m=gmm_diffusion.x[7]
+
+# params={
+#         'Coefficient of Innovation':p, 
+#         'Coefficient of Imitation':q, 
+#         'Market Potential': m,
+#         'Baseline Adoption': w0,
+#         'Price Elasticity': w1,
+#         'Distribution Intensity': w2,
+#         'Advertising Investment': w3,
+#         'Product Quality Impact': w6
+#         }
+
+
+# sys=control.NonlinearIOSystem(updfcn=gmm_dynamics,
+#                               inputs=['Product','Price','Place','Promotion'], 
+#                               outputs=['Adoption'], 
+#                               dt=1, 
+#                               states=['Adoption'],
+#                               name="Dynamic Marketing System",  
+#                               params=params)
+
+# with tf.device('/device:GPU:0'):
+#     res_gmm=optimal.solve_ocp(
+#         sys, 
+#         t_test, 
+#         X0, 
+#         cost, 
+#         constraints,
+#         initial_guess=tf.cast(np.transpose(mmix[60:72,:]),"float32")#tf.zeros([4,12])+0.5
+#         )
+
+# optimal_mmix=np.array(res_gmm.position).transpose()
+# optimal_mmix_ext=np.append(mmix[0:60,:],optimal_mmix,axis=0)
+# p=gmm_diffusion.x[0]
+# q=gmm_diffusion.x[1]
+# w0=gmm_diffusion.x[2]
+# w1=gmm_diffusion.x[3]
+# w2=gmm_diffusion.x[4]
+# w3=gmm_diffusion.x[5]
+# w6=gmm_diffusion.x[6]
+# m=gmm_diffusion.x[7]
+# gmm_forecast_optimal=gmm_model(t_test,p,q,m,optimal_mmix_ext,X0[0],w0,w1,w2,w3,1e3,1e3,w6)
+# gmm_forecast_optimal
+# gmm_forecast_oos
+#observed mmix has a 0.49394935 cost
+
+
+#Using AMMD
+p=agmm_diffusion.x[0]
+q=agmm_diffusion.x[1]
+w0=agmm_diffusion.x[2]
+w1=agmm_diffusion.x[3]
+w2=agmm_diffusion.x[4]
+w3=agmm_diffusion.x[5]
+w6=agmm_diffusion.x[6]
+m=agmm_diffusion.x[7]
 
 params={
         'Coefficient of Innovation':p, 
@@ -700,7 +917,7 @@ params={
         }
 
 
-sys=control.NonlinearIOSystem(updfcn=gmm_dynamics,
+sys=control.NonlinearIOSystem(updfcn=agmm_dynamics,
                               inputs=['Product','Price','Place','Promotion'], 
                               outputs=['Adoption'], 
                               dt=1, 
@@ -709,11 +926,80 @@ sys=control.NonlinearIOSystem(updfcn=gmm_dynamics,
                               params=params)
 
 with tf.device('/device:GPU:0'):
-    res_gmm=optimal.solve_ocp(
+    res_agmm=optimal.solve_ocp(
         sys, 
         t_test, 
         X0, 
-        cost_gmm, 
+        cost_additive, 
         constraints,
-        initial_guess=tf.zeros([4,12])
+        initial_guess=tf.cast(np.transpose(mmix[60:72,:]),"float32")#tf.zeros([4,12])+0.5
         )
+
+optimal_mmix=np.array(res_agmm.position).transpose()
+optimal_mmix_ext=np.append(mmix[0:60,:],optimal_mmix,axis=0)
+p=agmm_diffusion.x[0]
+q=agmm_diffusion.x[1]
+w0=agmm_diffusion.x[2]
+w1=agmm_diffusion.x[3]
+w2=agmm_diffusion.x[4]
+w3=agmm_diffusion.x[5]
+w6=agmm_diffusion.x[6]
+m=agmm_diffusion.x[7]
+agmm_forecast_optimal=agmm_model(t_test,p,q,m,optimal_mmix_ext,X0[0],w0,w1,w2,w3,1e3,1e3,w6)
+agmm_forecast_optimal
+agmm_forecast_oos
+#observed mmix has a 0.49394935 cost
+
+#Using Mesak
+p=mesak_diffusion.x[0]
+q=mesak_diffusion.x[1]
+w0=mesak_diffusion.x[2]
+w1=mesak_diffusion.x[3]
+w2=mesak_diffusion.x[4]
+w3=mesak_diffusion.x[5]
+m=mesak_diffusion.x[6]
+
+params={
+        'Coefficient of Innovation':p, 
+        'Coefficient of Imitation':q, 
+        'Market Potential': m,
+        'Baseline Adoption': w0,
+        'Price Elasticity': w1,
+        'Distribution Intensity': w2,
+        'Advertising Investment': w3,
+        'Product Quality Impact': w6
+        }
+
+
+sys=control.NonlinearIOSystem(updfcn=mesak_dynamics,
+                              inputs=['Price','Place','Promotion'], 
+                              outputs=['Adoption'], 
+                              dt=1, 
+                              states=['Adoption'],
+                              name="Dynamic Marketing System",  
+                              params=params)
+
+prod_obs=mmix[:,0]
+with tf.device('/device:GPU:0'):
+    res_mesak=optimal.solve_ocp(
+        sys, 
+        t_test, 
+        X0, 
+        cost_mesak, 
+        constraints,
+        initial_guess=tf.cast(np.transpose(mmix[60:72,1:4]),"float64")#tf.zeros([4,12])+0.5
+        )
+
+optimal_mmix=np.array(res_mesak.position).transpose()
+optimal_mmix_ext=np.append(np.transpose(np.array([mmix[0:72,0]])),np.append(mmix[0:60,1:4],optimal_mmix,axis=0),axis=1)
+p=mesak_diffusion.x[0]
+q=mesak_diffusion.x[1]
+w0=mesak_diffusion.x[2]
+w1=mesak_diffusion.x[3]
+w2=mesak_diffusion.x[4]
+w3=mesak_diffusion.x[5]
+m=mesak_diffusion.x[6]
+mesak_forecast_optimal=mesak_model(t_test,p,q,m,optimal_mmix_ext,X0[0],w0,w1,w2,w3,w6)
+mesak_forecast_optimal
+mesak_forecast_oos
+#observed mmix has a 0.49394935 cost
