@@ -19,7 +19,7 @@ from scipy.optimize import approx_fprime
 import requests
 
 gpu=tf.config.list_physical_devices('GPU')[0]
-tf.config.experimental.set_memory_growth(gpu, True)
+#tf.config.experimental.set_memory_growth(gpu, True)
 tf.config.set_logical_device_configuration(gpu,[tf.config.LogicalDeviceConfiguration(memory_limit=1700)])
 
 def kempe_greedy_algorithm(G,threshold_model,t,*args,k=10):
@@ -137,19 +137,19 @@ def link_classes(G,L):
     return link_classes
 
 data_path="C:\\Users\\MMSETUBAL\\Desktop\\Artigos\\MMM and Information Diffusion over Complex Networks"
-G=nx.read_graphml(data_path+"\\Data\\Network\\Network Files\\japan_municipalities_extended_normalized_v2.xml")
+G=nx.read_graphml(data_path+"\\Data\\Network\\Network Files\\japan_municipalities_extended_2022.xml")
 
 L=10
 
-random.seed(32466)
+random.seed(56788)
 link_class=link_classes(G,L)
 degrees=G.out_degree(weight='weight')
 link_class_thres=dict()
 link_class_thres[0]=random.uniform(1e10,1.5e10)
 for link in list(link_class.keys())[1:]:
     link_class_thres[link]=random.uniform(0,1e12)/random.uniform(1,1e6)
-    while link_class_thres[link]>link_class_thres[link-1]:
-        link_class_thres[link]=random.uniform(0,1e15)/random.uniform(1,1e6)
+    if link_class_thres[link]>link_class_thres[link-1]:
+        link_class_thres[link]=random.uniform(0,link_class_thres[link-1])
 assigned_classes=dict()
 for node in G.nodes():
     for link in list(link_class.keys()):
@@ -197,7 +197,9 @@ initial_values=np.zeros([1889,1889])
 for influencer in influencers:
     initial_values[influencer,:]=bc/len(influencers)
 
-A=nx.to_numpy_array(G,weight='normalized weight')  
+A=nx.to_numpy_array(G,weight='weight')  
+#Normalization of weights
+A=(A - A.min()) / (A.max() - A.min())
 network=tf.keras.layers.Dense(
     1889, use_bias=False,
     kernel_initializer=tf.compat.v1.keras.initializers.Constant(A),
@@ -216,7 +218,8 @@ def submodular_threshold_model(t,G,bc,mmix,thres,influencers,clipval=1e4,test=Fa
         for index,link in enumerate(thres):
             if link_classes[node] == str(index):
                 thresholds[node]=thres[index]
-    thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=False,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+                break
+    thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
     
     maximum_radiation=tf.math.reduce_max(w0+p*(-w1)*((mmix[:,1]+1e-12)**(-lamb))*(m*w2*mmix[:,2]-bc)*w3*np.sqrt(mmix[:,3]))
     values=network(influencers)+thres_var
@@ -252,12 +255,12 @@ def marketing_mix_cn_model(t,G,bc,mmix,thres,influencers,clipval=1e1,test=False)
         for index,link in enumerate(thres):
             if link_classes[node] == str(index):
                 thresholds[node]=thres[index]
-    thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=False,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
-    
+    thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+    #import pdb;pdb.set_trace()
     values=network(influencers)+thres_var
     f_i=np.zeros([1889,1889,73])
     f_i[:,:,0]=tf.multiply(np.exp(1/w4),values)+w5*np.exp(-1/w4)
-    #import pdb;pdb.set_trace()
+    
     u=np.zeros([1889])
     pred=np.zeros(len(t))
     activation=np.zeros(73)
@@ -296,6 +299,7 @@ def marketing_mix_cn_validation(x):
     for i in range(10):
         thresholds.append(x[10+i])
     
+    #import pdb;pdb.set_trace()
     global t_train
     global G
     global bc
@@ -304,7 +308,7 @@ def marketing_mix_cn_validation(x):
     global initial_values
     global iteration
     global batch
-    loss=tf.reduce_sum((adoption[50:60] - marketing_mix_cn_model(t_val,G,bc,m,mmix,thresholds,initial_values)[0])**2)
+    loss=tf.reduce_sum((adoption[50:60] - marketing_mix_cn_model(t_val,G,bc,mmix,thresholds,initial_values)[0])**2)
     tf.print("Iteration: "+str(iteration)+" Batch: "+str(batch)+" Validation Loss: ",loss)
     return loss.numpy()
 
@@ -334,6 +338,7 @@ def marketing_mix_cn_residuals(x):
     global initial_values
     global batch
     loss=tf.reduce_sum((adoption[0:50] - marketing_mix_cn_model(t_train,G,bc,mmix,thresholds,initial_values)[0])**2)
+    
     tf.print("Iteration: "+str(iteration)+" Batch: "+str(batch)+" Training Loss: ",loss)
     batch+=1
     return loss.numpy()
@@ -341,7 +346,7 @@ def marketing_mix_cn_residuals(x):
 val=[]
 iteration=1
 batch=1
-min_vals=0
+min_vals=20
 for i in range(300):
     if i==0:
         marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
@@ -388,7 +393,7 @@ marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(t_test,G,adoption[60-1],m
 
 influencers=kempe_greedy_algorithm(G,submodular_threshold_model,t_train,G,bc,mmix,thresholds,initial_values)
 
-influencers=[int(i) for i in influencers]
+#influencers=[int(i) for i in influencers]
 
 initial_values=np.zeros([1889,1889])
 for influencer in influencers:
