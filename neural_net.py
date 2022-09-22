@@ -137,17 +137,35 @@ def link_classes(G,L):
     return link_classes
 
 data_path="C:\\Users\\MMSETUBAL\\Desktop\\Artigos\\MMM and Information Diffusion over Complex Networks"
-G=nx.read_graphml(data_path+"\\Data\\Network\\Network Files\\japan_municipalities_extended_2022.xml")
+G=nx.read_graphml(data_path+"\\Data\\Network\\Network Files\\japan_municipalities_extended_20220920.xml")
 
-L=10
+L=19 #real L is +1 since it doesn't include special influencer class
 
-random.seed(56788)
+population=nx.get_node_attributes(G,'population')
+total_pop = 125621730 #source: https://www.worldometers.info/world-population/japan-population/
+pop_norm=dict()
+#to impute missing values
+mean_pop=(total_pop/len(G.nodes()))/total_pop
+for node,pop in zip(population.keys(),population.values()):
+    pop_norm[node]=pop/total_pop
+    
+for node in G.nodes():
+    try:
+        pop_norm[node]
+    #missing cases
+    except:
+        pop_norm[node]=mean_pop
+
+nx.set_node_attributes(G,pop_norm,name='normalized population')
+pop_norm = tf.convert_to_tensor(np.array(list(nx.get_node_attributes(G,'normalized population').values())))
+
+random.seed(5718)
 link_class=link_classes(G,L)
 degrees=G.out_degree(weight='weight')
 link_class_thres=dict()
-link_class_thres[0]=random.uniform(1e10,1.5e10)
+link_class_thres[0]=random.uniform(1e8,1.5e8)
 for link in list(link_class.keys())[1:]:
-    link_class_thres[link]=random.uniform(0,1e12)/random.uniform(1,1e6)
+    link_class_thres[link]=random.uniform(0,7e7)
     if link_class_thres[link]>link_class_thres[link-1]:
         link_class_thres[link]=random.uniform(0,link_class_thres[link-1])
 assigned_classes=dict()
@@ -159,7 +177,7 @@ for node in G.nodes():
             assigned_classes[node]=str(link)
 nx.set_node_attributes(G,assigned_classes,'link_class')
 thresholds=list(link_class_thres.values())
-
+print(thresholds)
 link_classes=nx.get_node_attributes(G,"link_class")
 
 data=pd.read_csv(data_path+"\\Data\\Statistical\\mmm_data.csv",sep=";").set_index("t")
@@ -173,7 +191,7 @@ t_test=np.array(data.index)[60:]
 mmix=np.array(data[['Product','Price','Place','Promotion']])
 
 p=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
-q=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+q=tf.Variable(5e-5,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 w0=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 w1=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 w2=tf.Variable(5e-3,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
@@ -184,7 +202,7 @@ w6=tf.Variable(0.5,trainable=True,dtype=tf.float32,constraint=tf.keras.constrain
 w7=tf.Variable(2,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 w8=tf.Variable(1e-3,trainable=False,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 lamb=tf.Variable(2,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
-m=tf.Variable(2e7,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+m=tf.Variable(3e8,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
 
 
 
@@ -193,13 +211,19 @@ bc=11197800
 influencers=centrality_heuristic(G,k=5,method='eigenvector',output="id")+centrality_heuristic(G,k=5,method='outdegree',output="id")
 influencers=[int(i) for i in influencers]
 
-initial_values=np.zeros([1889,1889])
-for influencer in influencers:
-    initial_values[influencer,:]=bc/len(influencers)
+# bc_v = tf.cast(pop_norm*bc,tf.float32)
+# initial_values=np.zeros([1889,1889])
+# for influencer in influencers:
+#     initial_values[influencer,:]=bc_v[influencer]
 
 A=nx.to_numpy_array(G,weight='weight')  
+
+#remove weights
+A[A>0]=1
+
 #Normalization of weights
-A=(A - A.min()) / (A.max() - A.min())
+#A=(A - A.min()) / (A.max() - A.min())
+
 network=tf.keras.layers.Dense(
     1889, use_bias=False,
     kernel_initializer=tf.compat.v1.keras.initializers.Constant(A),
@@ -230,7 +254,7 @@ def submodular_threshold_model(t,G,bc,mmix,thres,influencers,clipval=1e4,test=Fa
     pred=np.zeros(len(t))
     activation=np.zeros(73)
     for i,ti in enumerate(t):
-        f_i[:,:,ti]=tf.multiply(np.exp(ti/w4),tf.nn.relu(tf.keras.activations.tanh(values)))+w5*np.exp(-ti/w4)
+        f_i[:,:,ti]=tf.multiply(np.exp(ti/w4),tf.nn.relu(values))+w5*np.exp(-ti/w4)
         if i==1:
             u[:]=w5*np.exp(-t[0]/w4)
         else:
@@ -246,43 +270,76 @@ def submodular_threshold_model(t,G,bc,mmix,thres,influencers,clipval=1e4,test=Fa
         #tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
     return pred,values
 
-def marketing_mix_cn_model(t,G,bc,mmix,thres,influencers,clipval=1e1,test=False):
+def marketing_mix_cn_model(x,t,G,bc,mmix,thres,initial_values,clipval=1e1,test=False,scale=1e-12):
 
+    p.assign(x[0])
+    q.assign(x[1])
+    w0.assign(x[2])
+    w1.assign(x[3])
+    w2.assign(x[4])
+    w3.assign(x[5])
+    w4.assign(x[6])
+    w5.assign(x[7])
+    w6.assign(x[8])
+    m.assign(x[9])
+    
     global network    
     global link_classes
+    global pop_norm
+    
+    are_influencers=list(initial_values>0)[0]
     thresholds=dict()
-    for node in G.nodes():
+    for node,is_influencer in zip(G.nodes(),are_influencers):
         for index,link in enumerate(thres):
             if link_classes[node] == str(index):
-                thresholds[node]=thres[index]
+                if is_influencer:
+                    thresholds[node]=0
+                else:
+                    thresholds[node]=thres[index]
     thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
-    #import pdb;pdb.set_trace()
-    values=network(influencers)+thres_var
+    values=network(initial_values)+thres_var
     f_i=np.zeros([1889,1889,73])
     f_i[:,:,0]=tf.multiply(np.exp(1/w4),values)+w5*np.exp(-1/w4)
-    
+
     u=np.zeros([1889])
     pred=np.zeros(len(t))
+
+    prev_pred=tf.cast(bc.sum(),tf.float32)
+
+    potential=m*tf.cast(pop_norm,tf.float32)
     activation=np.zeros(73)
+    
+    #import pdb;pdb.set_trace()
+    
     for i,ti in enumerate(t):
-        radiation=tf.keras.activations.sigmoid(w0+p*(-w1)*(mmix[ti-1,1]+1e-12)*(m*w2*mmix[ti-1,2]-bc)*w3*(mmix[ti-1,3]+1e-12))
-        f_i[:,:,ti]=tf.multiply(np.exp(ti/w4),tf.nn.relu(tf.keras.activations.tanh(values)))+w5*np.exp(-ti/w4)
+        radiation=w0+p*(-w1)*(mmix[ti-1,1]+1e-12)*(m*w2*mmix[ti-1,2]-prev_pred)*w3*(mmix[ti-1,3]+1e-12)
+        f_i[:,:,ti]=tf.multiply(np.exp(ti/w4),tf.nn.relu(values))+w5*np.exp(-ti/w4)
+        
         if i==1:
             u[:]=w5*np.exp(-t[0]/w4)
         else:
             u[:]=w6*np.exp(-t[i]/w4)*tf.cast(tfp.math.trapz(np.exp(-t[0:i]/w4)*np.divide(np.exp(t[0:i]/w4)*tf.reduce_sum(tf.nn.relu(f_i[:,:,0:i]),axis=1)*mmix[0:i,0],w4)),dtype=tf.float32)+w5*np.exp(-t[i]/w4)
-        diffusion=q*u[:]
+        if i>1:
+            prev_pred=tf.cast(tf.reduce_sum(pred[i-1]),tf.float32)
+        diffusion=q*tf.cast(u[:], tf.float32)
+        
+        vals=tf.round(potential*tf.nn.relu(tf.nn.tanh(radiation+diffusion)))
+
+        pred[i]=prev_pred+tf.reduce_sum(vals)
+        
+        values=tf.clip_by_value(network(tf.transpose(tf.nn.relu(values+vals))),-1e5,1e5)
+
         #import pdb;pdb.set_trace()
-        pred[i]=bc+(m-bc)*(radiation+tf.reduce_mean(diffusion))/2
-        pred[i]=tf.reduce_max(pred)
-        values=network(tf.nn.relu(tf.transpose(values)))
         activation[i]=tf.reduce_max(tf.reduce_sum(tf.cast(tf.math.greater(values, 0.), tf.float32),axis=1))
         if test:
             tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
         #tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
+        
+        #tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
     return pred,values
 
 def marketing_mix_cn_validation(x):
+    global L
     p.assign(x[0])
     q.assign(x[1])
     w0.assign(x[2])
@@ -296,69 +353,160 @@ def marketing_mix_cn_validation(x):
     #w7.assign(x[9])
     #w7.assign(x[10])
     thresholds=[]
-    for i in range(10):
+    #L-1 because we exclude special influencers class which has thres=0
+    for i in range(L):
         thresholds.append(x[10+i])
     
     #import pdb;pdb.set_trace()
     global t_train
     global G
-    global bc
+    global bc_v
     global mmix
     global adoption
     global initial_values
     global iteration
     global batch
-    loss=tf.reduce_sum((adoption[50:60] - marketing_mix_cn_model(t_val,G,bc,mmix,thresholds,initial_values)[0])**2)
+    
+    loss=tf.reduce_sum((adoption[50:60] - marketing_mix_cn_model(x,t_val,G,bc_v,mmix,thresholds,initial_values)[0])**2)
     tf.print("Iteration: "+str(iteration)+" Batch: "+str(batch)+" Validation Loss: ",loss)
     return loss.numpy()
 
 def marketing_mix_cn_residuals(x):
-    p.assign(x[0])
-    q.assign(x[1])
-    w0.assign(x[2])
-    w1.assign(x[3])
-    w2.assign(x[4])
-    w3.assign(x[5])
-    w4.assign(x[6])
-    w5.assign(x[7])
-    w6.assign(x[8])
-    m.assign(x[9])
+    global L
+    loss=[]
+    pos=x
+    #import pdb;pdb.set_trace()
+    p.assign(pos[0])
+    q.assign(pos[1])
+    w0.assign(pos[2])
+    w1.assign(pos[3])
+    w2.assign(pos[4])
+    w3.assign(pos[5])
+    w4.assign(pos[6])
+    w5.assign(pos[7])
+    w6.assign(pos[8])
+    m.assign(pos[9])
     #w7.assign(x[9])
     #w8.assign(x[10])
     thresholds=[]
-    for i in range(10):
-        thresholds.append(x[10+i])
+    #import pdb;pdb.set_trace()
+    for i in range(L):
+        #import pdb;pdb.set_trace()
+        thresholds.append(pos[10+i])
     
     global iteration
     global t_train
     global G
-    global bc
+    global bc_v
     global mmix
     global adoption
     global initial_values
     global batch
-    loss=tf.reduce_sum((adoption[0:50] - marketing_mix_cn_model(t_train,G,bc,mmix,thresholds,initial_values)[0])**2)
     
-    tf.print("Iteration: "+str(iteration)+" Batch: "+str(batch)+" Training Loss: ",loss)
+    pos_loss=tf.reduce_sum((adoption[0:50] - marketing_mix_cn_model(pos,t_train,G,bc_v,mmix,thresholds,initial_values)[0])**2)
+    
+    tf.print("Iteration: "+str(iteration)+" Batch: "+str(batch)+" Training Loss: ",pos_loss)
     batch+=1
-    return loss.numpy()
+    return pos_loss.numpy()
+
+    # for pos in x:
+    #     #import pdb;pdb.set_trace()
+    #     p.assign(pos[0])
+    #     q.assign(pos[1])
+    #     w0.assign(pos[2])
+    #     w1.assign(pos[3])
+    #     w2.assign(pos[4])
+    #     w3.assign(pos[5])
+    #     w4.assign(pos[6])
+    #     w5.assign(pos[7])
+    #     w6.assign(pos[8])
+    #     m.assign(pos[9])
+    #     #w7.assign(x[9])
+    #     #w8.assign(x[10])
+    #     thresholds=[]
+    #     #import pdb;pdb.set_trace()
+    #     for i in range(L):
+    #         #import pdb;pdb.set_trace()
+    #         thresholds.append(pos[10+i])
+        
+    #     global iteration
+    #     global t_train
+    #     global G
+    #     global bc_v
+    #     global mmix
+    #     global adoption
+    #     global initial_values
+    #     global batch
+        
+    #     pos_loss=tf.reduce_sum((adoption[0:50] - marketing_mix_cn_model(pos,t_train,G,bc_v,mmix,thresholds,initial_values)[0])**2)
+        
+    #     tf.print("Iteration: "+str(iteration)+" Batch: "+str(batch)+" Training Loss: ",pos_loss)
+    #     batch+=1
+    #     loss.append(pos_loss.numpy()) 
+    return tf.Variable(loss)
+
+bc_v = np.zeros([1889])
+initial_values=np.zeros([1889,1889])
+for influencer in influencers:
+    bc_v[influencer]=pop_norm[influencer]
+bc_v=bc_v/bc_v.sum()
+bc_v=bc*bc_v
+for influencer_1 in influencers:
+    for influencer_2 in influencers:
+        initial_values[influencer_1,influencer_2]=bc_v[influencer_1]
 
 val=[]
 iteration=1
 batch=1
-min_vals=20
-for i in range(300):
+min_vals=1
+for i in range(3000):
     if i==0:
+        # marketing_mix_cn_diffusion=tfp.optimizer.differential_evolution_minimize(
+        #     objective_function=marketing_mix_cn_residuals,
+        #     initial_position=tf.Variable(
+        #         initial_value=[5e-1, 5e-4, 5e-10, 5e-10,
+        #                        5e-10, 5e-10, 1, 1,
+        #                        5e-4, 2e7]+thresholds),
+        #         #population_stddev=1e-3,
+        #         #differential_weight=0.0001,
+        #          #, 1.3698771e+10, 2.5126962e+05,
+        #          #6.2463480e+04, 3.2222637e+04, 2.3079705e+04, 1.3864007e+04,
+        #          #6.4039512e+03, 2.5315310e+03, 1.1012032e+03, 4.3689752e+02]),
+        #     #initial_vertex=tf.constant([5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,2e7]+thresholds), 
+        #     population_size=tf.constant(10),
+        #     max_iterations=tf.constant(3)
+        #     )
         marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
             objective_function=marketing_mix_cn_residuals,
-            initial_vertex=tf.constant([5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,2e7]+thresholds), 
-            max_iterations=tf.constant(1)
+            initial_vertex=tf.constant(
+                [5e-1, 5e-4, 5e-10, 5e-10,
+                5e-10, 5e-10, 1.0000000e+00, 1.0000000e+00,
+                5e-4, 2e7]+thresholds),
+                  #, 1.3698771e+10, 2.5126962e+05,
+                  #6.2463480e+04, 3.2222637e+04, 2.3079705e+04, 1.3864007e+04,
+                  #6.4039512e+03, 2.5315310e+03, 1.1012032e+03, 4.3689752e+02]),
+            #initial_vertex=tf.constant([5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,2e7]+thresholds), 
+            max_iterations=tf.constant(1),
+            #contraction=0.8,
+            #expansion=5,
+            #reflection=2
             )
     else:
+        # marketing_mix_cn_diffusion=tfp.optimizer.differential_evolution_minimize(
+        #         objective_function=marketing_mix_cn_residuals,
+        #         initial_position=tf.Variable(initial_value=x), 
+        #         #population_stddev=1e-3,
+        #         #differential_weight=0.0001,
+        #         population_size=tf.constant(10),
+        #         max_iterations=tf.constant(3)
+        #         )
         marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
             objective_function=marketing_mix_cn_residuals,
             initial_vertex=x, 
-            max_iterations=tf.constant(1)
+            max_iterations=tf.constant(1),
+            contraction=0.8,
+            expansion=5,
+            reflection=2
             )
     batch=1
     x=marketing_mix_cn_diffusion.position
@@ -384,20 +532,26 @@ m.assign(x[9])
 #w7.assign(x[9])
 #w8.assign(1e-3)
 thresholds=[]
-for i in range(10):
+for i in range(L):
     thresholds.append(x[10+i])
         
     
-marketing_mix_cn_forecast_is,final_values=marketing_mix_cn_model(t_train,G,bc,mmix,thresholds,initial_values,test=True)
-marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(t_test,G,adoption[60-1],mmix,thresholds,final_values,test=True)
+marketing_mix_cn_forecast_is,final_values=marketing_mix_cn_model(x,t_train,G,bc,mmix,thresholds,initial_values,test=True)
+marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(x,t_test,G,adoption[60-1],mmix,thresholds,final_values,test=True)
 
 influencers=kempe_greedy_algorithm(G,submodular_threshold_model,t_train,G,bc,mmix,thresholds,initial_values)
 
 #influencers=[int(i) for i in influencers]
-
+bc_v = np.zeros([1889])
 initial_values=np.zeros([1889,1889])
 for influencer in influencers:
-    initial_values[influencer,:]=bc/len(influencers)
+    bc_v[influencer]=pop_norm[influencer]
+bc_v=bc_v/bc_v.sum()
+bc_v=bc*bc_v
+for influencer_1 in influencers:
+    for influencer_2 in influencers:
+        initial_values[influencer_1,influencer_2]=bc_v[influencer_1]
+    
 
 val=[]
 iteration=1
@@ -407,7 +561,7 @@ for i in range(300):
     if i==0:
         marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
             objective_function=marketing_mix_cn_residuals,
-            initial_vertex=tf.constant([5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,2e7]+thresholds), 
+            initial_vertex=tf.constant([5e-1,5e-1,5e-2,5e-2,5e-2,5e-2,1,1,0.5,2e8]+thresholds), 
             max_iterations=tf.constant(1)
             )
     else:
@@ -420,7 +574,7 @@ for i in range(300):
     x=marketing_mix_cn_diffusion.position
     val.append(marketing_mix_cn_validation(x))
     if len(val)>1:
-        if val[-1]>val[-2] and len(val)>=min_vals:
+        if val[-1]>=val[-2] and len(val)>=min_vals:
             print("Early Stopping Condition Met.")
             break
     iteration+=1
@@ -440,9 +594,9 @@ m.assign(x[9])
 #w7.assign(x[9])
 #w8.assign(1e-3)
 thresholds=[]
-for i in range(10):
+for i in range(L):
     thresholds.append(x[10+i])
         
     
-marketing_mix_cn_forecast_is,final_values=marketing_mix_cn_model(t_train,G,bc,mmix,thresholds,initial_values,test=True)
-marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(t_test,G,adoption[60-1],mmix,thresholds,final_values,test=True)
+marketing_mix_cn_forecast_is,final_values=marketing_mix_cn_model(x,t_train,G,bc,mmix,thresholds,initial_values,test=True)
+marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(x,t_test,G,adoption[60-1],mmix,thresholds,final_values,test=True)
