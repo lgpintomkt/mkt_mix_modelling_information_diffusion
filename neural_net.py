@@ -20,7 +20,7 @@ import requests
 
 gpu=tf.config.list_physical_devices('GPU')[0]
 #tf.config.experimental.set_memory_growth(gpu, True)
-tf.config.set_logical_device_configuration(gpu,[tf.config.LogicalDeviceConfiguration(memory_limit=1700)])
+tf.config.set_logical_device_configuration(gpu,[tf.config.LogicalDeviceConfiguration(memory_limit=17000)])
 
 def kempe_greedy_algorithm(G,threshold_model,t,*args,k=10):
     names=nx.get_node_attributes(G,"name")
@@ -270,7 +270,7 @@ def submodular_threshold_model(t,G,bc,mmix,thres,influencers,clipval=1e4,test=Fa
         #tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
     return pred,values
 
-def marketing_mix_cn_model(x,t,G,bc,mmix,thres,initial_values,clipval=1e1,test=False,scale=1e-12):
+def marketing_mix_cn_model_v1(x,t,G,bc,mmix,thres,initial_values,clipval=1e1,test=False,scale=1e-12,prev_pred=None,initial_state=None,initial_u=None):
 
     p.assign(x[0])
     q.assign(x[1])
@@ -286,57 +286,139 @@ def marketing_mix_cn_model(x,t,G,bc,mmix,thres,initial_values,clipval=1e1,test=F
     global network    
     global link_classes
     global pop_norm
-    
-    are_influencers=list(initial_values>0)[0]
-    thresholds=dict()
-    for node,is_influencer in zip(G.nodes(),are_influencers):
-        for index,link in enumerate(thres):
-            if link_classes[node] == str(index):
-                if is_influencer:
-                    thresholds[node]=0
-                else:
+    if t[0]==1:
+        are_influencers=list(initial_values>0)[0]
+        thresholds=dict()
+        for node,is_influencer in zip(G.nodes(),are_influencers):
+            for index,link in enumerate(thres):
+                if link_classes[node] == str(index):
+                    if is_influencer:
+                        thresholds[node]=0
+                    else:
+                        thresholds[node]=thres[index]
+        thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+        values=network(initial_values)+thres_var
+    else:
+        thresholds=dict()
+        for node in G.nodes():
+            for index,link in enumerate(thres):
+                if link_classes[node] == str(index):
                     thresholds[node]=thres[index]
-    thres_var=tf.Variable(np.tile(np.array(list(thresholds.values()))*-1,[1889,1]),trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
-    values=network(initial_values)+thres_var
-    f_i=np.zeros([1889,1889,73])
-    f_i[:,:,0]=tf.multiply(np.exp(1/w4),values)+w5*np.exp(-1/w4)
-
-    u=np.zeros([1889])
+        values=initial_values
+    
+    if initial_state is None:
+        f_i=np.zeros([1889,1889,73])
+        f_i[:,:,0]=tf.multiply(np.exp(1/w4),values)+w5*np.exp(-1/w4)
+        u=np.zeros([1889])
+    else:
+        f_i=initial_state
+        u=initial_u
+    
     pred=np.zeros(len(t))
 
-    prev_pred=tf.cast(bc.sum(),tf.float32)
+    if prev_pred is None:
+        prev_pred=tf.cast(bc.sum(),tf.float32)
 
     potential=m*tf.cast(pop_norm,tf.float32)
     activation=np.zeros(73)
-    
-    #import pdb;pdb.set_trace()
     
     for i,ti in enumerate(t):
         radiation=w0+p*(-w1)*(mmix[ti-1,1]+1e-12)*(m*w2*mmix[ti-1,2]-prev_pred)*w3*(mmix[ti-1,3]+1e-12)
         f_i[:,:,ti]=tf.multiply(np.exp(ti/w4),tf.nn.relu(values))+w5*np.exp(-ti/w4)
         
-        if i==1:
+        if i==0:
             u[:]=w5*np.exp(-t[0]/w4)
         else:
             u[:]=w6*np.exp(-t[i]/w4)*tf.cast(tfp.math.trapz(np.exp(-t[0:i]/w4)*np.divide(np.exp(t[0:i]/w4)*tf.reduce_sum(tf.nn.relu(f_i[:,:,0:i]),axis=1)*mmix[0:i,0],w4)),dtype=tf.float32)+w5*np.exp(-t[i]/w4)
-        if i>1:
-            prev_pred=tf.cast(tf.reduce_sum(pred[i-1]),tf.float32)
+        
+        if i>0:
+            prev_pred=tf.cast(pred[i-1],tf.float32)
         diffusion=q*tf.cast(u[:], tf.float32)
         
         vals=tf.round(potential*tf.nn.relu(tf.nn.tanh(radiation+diffusion)))
 
         pred[i]=prev_pred+tf.reduce_sum(vals)
         
-        values=tf.clip_by_value(network(tf.transpose(tf.nn.relu(values+vals))),-1e5,1e5)
+        values=tf.clip_by_value(network(tf.transpose(tf.nn.relu(values+vals))),-1e20,1e20)
+        #values=network(tf.transpose(tf.nn.relu(values+vals)))
 
-        #import pdb;pdb.set_trace()
-        activation[i]=tf.reduce_max(tf.reduce_sum(tf.cast(tf.math.greater(values, 0.), tf.float32),axis=1))
+        activation[i]=tf.reduce_sum(tf.cast(tf.math.greater(vals, 0.), tf.float32))
         if test:
-            tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
+            tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", activation[i])
+            
         #tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
         
         #tf.print("Step: ", ti, " Adoption:", pred[i], " Activation:", tf.reduce_max(activation))
-    return pred,values
+    return pred,values,f_i,u
+
+def marketing_mix_cn_model(x,steps,G,bc,mmix,thres,prev_pred=None,test=False):
+    global network    
+    global link_classes
+    global pop_norm
+    
+    p.assign(x[0])
+    q.assign(x[1])
+    w0.assign(x[2])
+    w1.assign(x[3])
+    w2.assign(x[4])
+    w3.assign(x[5])
+    w4.assign(x[6])
+    w5.assign(x[7])
+    w6.assign(x[8])
+    m.assign(x[9])
+    
+    if steps[0]==1:
+        are_influencers=list(bc>0)
+        thresholds=dict()
+        for node,is_influencer in zip(G.nodes(),are_influencers):
+            for index,link in enumerate(thres):
+                if link_classes[node] == str(index):
+                    if is_influencer:
+                        thresholds[node]=0
+                    else:
+                        thresholds[node]=thres[index]
+        thres_var=tf.Variable(np.array(list(thresholds.values()))*-1,trainable=True,dtype=tf.float32,constraint=tf.keras.constraints.NonNeg)
+        state=bc+thres_var
+    else:
+        thresholds=dict()
+        for node in G.nodes():
+            for index,link in enumerate(thres):
+                if link_classes[node] == str(index):
+                    thresholds[node]=thres[index]
+        state=bc
+    f_t=np.zeros([1889,73])
+    f_t[:,0]=tf.nn.relu(state)
+    
+    
+    pred=np.zeros(len(steps))
+
+    if prev_pred is None:
+        prev_pred=tf.cast(bc.sum(),tf.float32)
+
+    potential=m*tf.cast(pop_norm,tf.float32)
+    activation=np.zeros(73)
+
+    t_0=steps[0]
+    
+    for t in steps:
+        U=np.exp(-t/w4)*tfp.math.trapz(np.exp(-steps[0:t-t_0]/w4)*np.divide(np.exp(steps[0:t-t_0]/w4)*f_t[:,0:t-t_0]*mmix[0:t-t_0,0],w4))
+        S=q*tf.cast(U,tf.float32)
+        R=w0+p*(-w1)*(mmix[t-1,1]+1e-12)*(m*w2*mmix[t-1,2]-prev_pred)*w3*(mmix[t-1,3]+1e-12)
+        f_t[:,t]=tf.round(potential*tf.nn.relu(tf.nn.tanh(S+R)))
+        
+        if t>1:
+            delta=tf.round(f_t[:,t-1]-f_t[:,t-2])
+        else:
+            delta=tf.round(f_t[:,t-1]-state)
+        
+        state=tf.clip_by_value(network(tf.reshape(tf.nn.relu(tf.cast(state,tf.float32)+tf.cast(tf.nn.relu(delta),tf.float32)),[1,1889])),-1e5,1e5)
+
+        adopt=tf.nn.relu(state)
+        pred[t-t_0]=tf.reduce_sum(tf.nn.relu(adopt))
+        activation[t-t_0]=tf.reduce_sum(tf.cast(tf.math.greater(adopt, 0.), tf.float32))
+        if test:
+            tf.print("Step: ", t, " Adoption:", pred[t-t_0], " Activation:", activation[t-t_0])
+    return pred,state
 
 def marketing_mix_cn_validation(x):
     global L
@@ -353,7 +435,7 @@ def marketing_mix_cn_validation(x):
     #w7.assign(x[9])
     #w7.assign(x[10])
     thresholds=[]
-    #L-1 because we exclude special influencers class which has thres=0
+    
     for i in range(L):
         thresholds.append(x[10+i])
     
@@ -446,14 +528,15 @@ def marketing_mix_cn_residuals(x):
     return tf.Variable(loss)
 
 bc_v = np.zeros([1889])
-initial_values=np.zeros([1889,1889])
+initial_values=np.zeros([1889])
 for influencer in influencers:
     bc_v[influencer]=pop_norm[influencer]
 bc_v=bc_v/bc_v.sum()
 bc_v=bc*bc_v
-for influencer_1 in influencers:
-    for influencer_2 in influencers:
-        initial_values[influencer_1,influencer_2]=bc_v[influencer_1]
+# for influencer_1 in influencers:
+#     initial_values[influencer_1]=bc_v[influencer_1]
+    
+#marketing_mix_cn_forecast,final_values=marketing_mix_cn_model(x,np.concatenate([t_train,t_val,t_test]),G,bc_v,mmix,thresholds,initial_values,test=True)
 
 val=[]
 iteration=1
@@ -478,18 +561,25 @@ for i in range(3000):
         #     )
         marketing_mix_cn_diffusion=tfp.optimizer.nelder_mead_minimize(
             objective_function=marketing_mix_cn_residuals,
-            initial_vertex=tf.constant(
-                [5e-1, 5e-4, 5e-10, 5e-10,
-                5e-10, 5e-10, 1.0000000e+00, 1.0000000e+00,
-                5e-4, 2e7]+thresholds),
+            initial_vertex=tf.constant([0.9008275 , 0.37916446, 0.28020763, 0.40833557, 0.4189949,
+                                        0.24604154, 0.87704813, 0.6211828 , 0.49819326, 
+                                        2e7, 144737700.94791764, 50392018.5719171, 20831366.003841512, 
+                                        15030869.912151352, 11629201.89819014, 
+                                        1976721.7712891027, 1888060.7269569193, 
+                                        1473715.2822209105, 865269.1231318496, 
+                                        407110.1660961961, 275508.9940675797, 
+                                        168963.96109083033, 70139.87280078296, 
+                                        21164.85799529278, 8377.897838427198, 
+                                        3072.7481537691597, 2723.9333388896894, 
+                                        948.9738723095359, 106.16341019828481]),
                   #, 1.3698771e+10, 2.5126962e+05,
                   #6.2463480e+04, 3.2222637e+04, 2.3079705e+04, 1.3864007e+04,
                   #6.4039512e+03, 2.5315310e+03, 1.1012032e+03, 4.3689752e+02]),
             #initial_vertex=tf.constant([5e-2,5e-2,5e-3,5e-3,5e-3,5e-3,1,1,0.5,2e7]+thresholds), 
             max_iterations=tf.constant(1),
-            #contraction=0.8,
-            #expansion=5,
-            #reflection=2
+            contraction=0.8,
+            expansion=5,
+            reflection=2
             )
     else:
         # marketing_mix_cn_diffusion=tfp.optimizer.differential_evolution_minimize(
@@ -534,10 +624,36 @@ m.assign(x[9])
 thresholds=[]
 for i in range(L):
     thresholds.append(x[10+i])
-        
     
-marketing_mix_cn_forecast_is,final_values=marketing_mix_cn_model(x,t_train,G,bc,mmix,thresholds,initial_values,test=True)
-marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(x,t_test,G,adoption[60-1],mmix,thresholds,final_values,test=True)
+# x=tf.constant([5.80038428e-01, 1.78161345e-03, 5.80044957e-10, 5.80040682e-10,
+#                    5.80040682e-10, 5.80040682e-10, 1.34293377e+00, 1.16007686e+00,
+#                    6.09044509e-04, 1.62052297e+05, 1.67908352e+08, 5.84586280e+07,
+#                    2.41660060e+07, 1.74370860e+07, 1.34907650e+07, 2.29316950e+06,
+#                    2.19031575e+06, 1.70963000e+06, 1.00378775e+06, 4.72280688e+05,
+#                    3.19612938e+05, 1.96012906e+05, 8.13687734e+04, 2.45530156e+04,
+#                    9.71913965e+03, 3.56466724e+03, 3.16002393e+03, 1.10088794e+03,
+#                    1.23159966e+02])
+
+# x=tf.constant([5.8210725e-01, 7.0090638e-03, 5.8211436e-10, 5.8211008e-10,
+#         5.8211019e-10, 5.8211008e-10, 1.3477243e+00, 1.2835464e+00,
+#         6.1121729e-04, 1.5339089e+05, 1.6850730e+08, 5.8667156e+07,
+#         2.4252220e+07, 1.7499292e+07, 1.3538883e+07, 2.3013488e+06,
+#         2.1981292e+06, 1.7157299e+06, 1.0073689e+06, 4.7396553e+05,
+#         3.2075312e+05, 1.9671219e+05, 8.1659008e+04, 2.4640582e+04,
+#         9.7538066e+03, 3.5773816e+03, 3.1712957e+03, 1.1048152e+03,
+#         1.2359921e+02])
+    
+
+marketing_mix_cn_forecast_is,intermediate_state=marketing_mix_cn_model(x,t_train,G,bc_v,mmix,thresholds,test=True)
+marketing_mix_cn_forecast_val,final_state=marketing_mix_cn_model(x,t_val,G,intermediate_state,mmix,thresholds,prev_pred=marketing_mix_cn_forecast_is[-1],test=True)
+marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(x,t_test,G,final_state,mmix,thresholds,prev_pred=marketing_mix_cn_forecast_val[-1],test=True)
+
+#marketing_mix_cn_forecast,final_values=marketing_mix_cn_model(x,np.concatenate([t_train,t_val,t_test]),G,bc_v,mmix,thresholds,initial_values,test=True)
+# marketing_mix_cn_forecast_is,intermediate_values=marketing_mix_cn_model(x,t_train,G,bc_v,mmix,thresholds,initial_values,test=True)
+# marketing_mix_cn_forecast_val,final_values=marketing_mix_cn_model(x,t_val,G,bc_v,mmix,thresholds,intermediate_values,test=True,prev_pred=marketing_mix_cn_forecast_is[-1])
+# marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(x,t_test,G,bc_v,mmix,thresholds,final_values,test=True,prev_pred=marketing_mix_cn_forecast_val[-1])
+
+#marketing_mix_cn_forecast,final_values=marketing_mix_cn_model(x_,np.concatenate([t_train,t_val,t_test]),G,bc_v,mmix,thresholds,initial_values,test=True)
 
 influencers=kempe_greedy_algorithm(G,submodular_threshold_model,t_train,G,bc,mmix,thresholds,initial_values)
 
@@ -551,7 +667,6 @@ bc_v=bc*bc_v
 for influencer_1 in influencers:
     for influencer_2 in influencers:
         initial_values[influencer_1,influencer_2]=bc_v[influencer_1]
-    
 
 val=[]
 iteration=1
