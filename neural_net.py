@@ -140,7 +140,7 @@ def get_link_classes(G,L):
         link_classes[i]=min(degree)
     return link_classes
 
-def optimize(x0,min_vals=1,max_steps=100):
+def optimize(x0,min_vals=1,max_steps=10000):
     global iteration
     global batch
     val=[]
@@ -301,7 +301,7 @@ def marketing_mix_cn_model(x,steps,G,bc,mmix,thres,prev_pred=None,history=None,t
                     thresholds[node]=thres[index]
         state=bc
     if history is None:
-        f_t=np.zeros([1889,74])
+        f_t=np.zeros([1889,73])
         f_t[:,0]=tf.nn.relu(state)
     else:
         f_t=history
@@ -317,13 +317,18 @@ def marketing_mix_cn_model(x,steps,G,bc,mmix,thres,prev_pred=None,history=None,t
     
     for t in steps:
         R=w0+p*w1*(mmix[t-t_0,1]+1e-12)*(m*w2*mmix[t-t_0,2]-prev_pred)*w3*(mmix[t-t_0,3]+1e-12)
-        U=tf.cast(w5*np.exp(-t/w4),tf.float32)+tf.cast(tf.reshape(np.exp(-t/w4)*tfp.math.trapz(np.exp(-steps[0:t-t_0+1]/w4)*np.divide(np.exp(steps[0:t-t_0+1]/w4)*f_t[:,0:t-t_0+1]*mmix[0:t-t_0+1,0],w4)),[1,1889]),tf.float32)
+        U=tf.cast(w5*np.exp(-t/w4),tf.float32)+tf.cast(tf.reshape(np.exp(-t/w4)*tfp.math.trapz(np.exp(-steps[0:t-t_0]/w4)*np.divide(np.exp(steps[0:t-t_0]/w4)*f_t[:,0:t-t_0]*mmix[0:t-t_0,0],w4)),[1,1889]),tf.float32)
         S=tf.clip_by_value(network(q*tf.nn.relu(tf.cast(tf.cast(U,tf.float32),tf.float32))),0,potential)
         f_t[:,t-t_0+1]=tf.nn.relu(state+potential*tf.nn.tanh(S+R))
         
         delta=f_t[:,t-t_0+1]-f_t[:,t-t_0]
-        if t>50:
-            import pdb;pdb.set_trace()
+        # if t>50:
+        #     f_t
+        #     R
+        #     U
+        #     S
+        #     import pdb;pdb.set_trace()
+
         state+=delta
         actives=tf.nn.relu(state)
         pred[t-t_0]=tf.reduce_sum(actives)
@@ -406,12 +411,14 @@ for influencer in influencers:
 iteration=1
 batch=1
 
-x0=tf.constant( [5.1343971e-01, 5.1344087e-04, 5.1343940e-10, 5.1343940e-10, 5.1343940e-10,
-                 5.1343940e-10, 6.4730436e-01, 1.0268794e+00, 5.1344087e-04, 2.0537586e+07,
-                 1.0547412e+08, 5.1632240e+07, 9.0825730e+06, 4.7195565e+06, 1.6763259e+06,
-                 8.3230900e+05, 6.8935594e+05, 6.5293800e+05, 3.2070484e+05, 2.1845523e+05,
-                 1.7288408e+05, 8.4760445e+04, 3.0504652e+04, 2.5148848e+04, 8.7415771e+03,
-                 4.6341431e+03, 3.5872859e+03, 2.7712622e+02, 1.7419505e+02],dtype=tf.float32)        
+x0=tf.constant( [5.1609600e-01, 5.1609671e-04, 5.1609478e-10, 5.1609478e-10,
+       5.1609478e-10, 5.1609478e-10, 1e3, 1.0321920e+00,
+       5.1609671e-04, 2.0643840e+07, 1.0601966e+08, 5.1899324e+07,
+       9.1295560e+06, 4.7439720e+06, 1.6849948e+06, 8.3661325e+05,
+       6.9292162e+05, 6.5631544e+05, 3.2236375e+05, 2.1958497e+05,
+       1.7377822e+05, 8.5198938e+04, 3.0662404e+04, 2.5278943e+04,
+       8.7867939e+03, 4.6581108e+03, 3.6058425e+03, 2.2488197e+04,
+       2.5869641e+02],dtype=tf.float32)        
 x=optimize(x0)  
 
 print("In-Sample Forecast")
@@ -419,7 +426,7 @@ marketing_mix_cn_forecast_is,intermediate_state,intermediate_history=marketing_m
 marketing_mix_cn_forecast_val,final_state,final_history=marketing_mix_cn_model(x0,t_val,G,intermediate_state,mmix,thresholds,prev_pred=marketing_mix_cn_forecast_is[-1],history=intermediate_history,test=True)
 
 print("Out-of-Sample Forecast")
-marketing_mix_cn_forecast_oos,_=marketing_mix_cn_model(x,t_test,G,final_state,mmix,thresholds,prev_pred=marketing_mix_cn_forecast_val[-1],history=final_history,test=True)
+marketing_mix_cn_forecast_oos,_,_=marketing_mix_cn_model(x,t_test,G,final_state,mmix,thresholds,prev_pred=marketing_mix_cn_forecast_val[-1],history=final_history,test=True)
 
 #Final influencer discovery using IMMD model
 influencers=kempe_greedy_algorithm(x,G,marketing_mix_cn_model,t_train,G,initial_values,mmix,thresholds)
