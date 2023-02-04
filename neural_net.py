@@ -304,7 +304,7 @@ def marketing_mix_cn_model(x,steps,G,bc,mmix,thres,prev_pred=None,history=None,t
                     thresholds[node]=thres[index]
         state=bc
     if history is None:
-        f_t=np.zeros([1889,73])
+        f_t=np.zeros([G.number_of_nodes(),73])
         f_t[:,0]=tf.nn.relu(state)
     else:
         f_t=history
@@ -320,7 +320,7 @@ def marketing_mix_cn_model(x,steps,G,bc,mmix,thres,prev_pred=None,history=None,t
     
     for t in steps[t_0-1:]:
         R=w0+p*w1*(mmix[t-1,1]+1e-12)*(m*w2*mmix[t-1,2]-prev_pred)*w3*(mmix[t-1,3]+1e-12)
-        U=tf.cast(w5*np.exp(-t/w4),tf.float32)+tf.cast(tf.reshape(np.exp(-t/w4)*tfp.math.trapz(np.exp(-steps[0:t-1]/w4)*np.divide(np.exp(steps[0:t-1]/w4)*f_t[:,0:t-1]*mmix[0:t-1,0],w4)),[1,1889]),tf.float32)
+        U=tf.cast(w5*np.exp(-t/w4),tf.float32)+tf.cast(tf.reshape(np.exp(-t/w4)*tfp.math.trapz(np.exp(-steps[0:t-1]/w4)*np.divide(np.exp(steps[0:t-1]/w4)*f_t[:,0:t-1]*mmix[0:t-1,0],w4)),[1,G.number_of_nodes()]),tf.float32)
         S=tf.clip_by_value(network(q*tf.nn.relu(tf.cast(tf.cast(U,tf.float32),tf.float32))),0,potential)
         f_t[:,t]=tf.nn.relu(state+potential*tf.nn.tanh(S+R))
         
